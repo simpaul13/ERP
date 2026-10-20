@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { Link, usePage } from '@inertiajs/vue3';
-import { LayoutGrid } from '@lucide/vue';
+import { Boxes, LayoutGrid } from '@lucide/vue';
 import { computed } from 'vue';
 import AppLogo from '@/components/AppLogo.vue';
 import NavMain from '@/components/NavMain.vue';
@@ -30,8 +30,14 @@ const mainNavItems = computed<NavItem[]>(() => [
         href: dashboardUrl.value,
         icon: LayoutGrid,
     },
+    {
+        title: 'Inventory',
+        href: page.props.currentTeam
+            ? `/${page.props.currentTeam.slug}/inventories`
+            : '/inventories',
+        icon: Boxes,
+    },
 ]);
-
 </script>
 
 <template>

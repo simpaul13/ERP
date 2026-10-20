@@ -11,6 +11,7 @@ Route::prefix('{current_team}')
     ->middleware(['auth', 'verified', EnsureTeamMembership::class])
     ->group(function () {
         Route::get('dashboard', DashboardController::class)->name('dashboard');
+        Route::inertia('inventories', 'inventories/Index')->name('inventories.index');
     });
 
 Route::middleware(['auth'])->group(function () {
