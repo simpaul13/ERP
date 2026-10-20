@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Head } from '@inertiajs/vue3';
+import { Head, router, usePage } from '@inertiajs/vue3';
 import {
     ArrowDownToLine,
     ArrowUpFromLine,
@@ -15,7 +15,7 @@ import {
     Trash2,
     Upload,
 } from '@lucide/vue';
-import { computed, onBeforeUnmount, ref } from 'vue';
+import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import { Button } from '@/components/ui/button';
 import DataTable from '@/components/ui/DataTable.vue';
 import {
@@ -33,9 +33,11 @@ type ProductImage = {
     id: string;
     name: string;
     src: string;
+    file?: File;
 };
 
 type InventoryItem = {
+    id: number;
     sku: string;
     name: string;
     category: string;
@@ -57,7 +59,17 @@ const inventoryColumns = [
     { key: 'actions', label: 'Actions', align: 'right' as const },
 ];
 
+const page = usePage();
 const items = ref<InventoryItem[]>([]);
+const savingItem = ref(false);
+
+watch(
+    () => page.props.inventoryItems as InventoryItem[] | undefined,
+    (inventoryItems) => {
+        items.value = inventoryItems ?? [];
+    },
+    { immediate: true },
+);
 
 const query = ref('');
 const selectedStatus = ref('All items');
@@ -126,33 +138,96 @@ function stockStatus(item: InventoryItem): string {
     return item.quantity <= item.reorderPoint ? 'Low stock' : 'In stock';
 }
 
+function logInventoryActivity(
+    action: 'Create' | 'Update' | 'Upload Image',
+    item: Pick<InventoryItem, 'name' | 'sku'>,
+    imageNames: string[] = [],
+): void {
+    const currentTeam = page.props.currentTeam as { slug: string } | null;
+    const csrfToken = decodeURIComponent(
+        document.cookie
+            .split('; ')
+            .find((cookie) => cookie.startsWith('XSRF-TOKEN='))
+            ?.split('=')[1] ?? '',
+    );
+
+    if (!currentTeam || !csrfToken) {
+        return;
+    }
+
+    void fetch(`/${currentTeam.slug}/inventories/activity`, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: {
+            Accept: 'application/json',
+            'Content-Type': 'application/json',
+            'X-XSRF-TOKEN': csrfToken,
+        },
+        body: JSON.stringify({
+            action,
+            item_name: item.name,
+            sku: item.sku,
+            image_names: imageNames,
+        }),
+    });
+}
+
 function mainImage(item: InventoryItem): ProductImage | undefined {
     return item.images.find((image) => image.id === item.mainImageId);
 }
 
 function addItem(): void {
-    if (!newItem.value.name.trim() || !newItem.value.sku.trim()) {
+    const currentTeam = page.props.currentTeam as { slug: string } | null;
+
+    if (
+        !currentTeam ||
+        savingItem.value ||
+        !newItem.value.name.trim() ||
+        !newItem.value.sku.trim()
+    ) {
         return;
     }
 
-    items.value.unshift({
-        ...newItem.value,
-        sku: newItem.value.sku.trim().toUpperCase(),
-        images: [...newItemImages.value],
-        mainImageId: newItemMainImageId.value,
-    });
-    newItemImages.value = [];
-    newItemMainImageId.value = null;
-    newItem.value = {
-        name: '',
-        sku: '',
-        category: '',
-        location: '',
-        quantity: 0,
-        reorderPoint: 0,
-        unitCost: 0,
-    };
-    dialogOpen.value = false;
+    photoError.value = '';
+    savingItem.value = true;
+
+    router.post(
+        `/${currentTeam.slug}/inventories`,
+        {
+            ...newItem.value,
+            name: newItem.value.name.trim(),
+            sku: newItem.value.sku.trim().toUpperCase(),
+            reorder_point: newItem.value.reorderPoint,
+            unit_cost: newItem.value.unitCost,
+            image_ids: newItemImages.value.map((image) => image.id),
+            images: newItemImages.value.map((image) => image.file),
+            main_image_id: newItemMainImageId.value,
+        },
+        {
+            forceFormData: true,
+            onSuccess: () => {
+                newItemImages.value = [];
+                newItemMainImageId.value = null;
+                newItem.value = {
+                    name: '',
+                    sku: '',
+                    category: '',
+                    location: '',
+                    quantity: 0,
+                    reorderPoint: 0,
+                    unitCost: 0,
+                };
+                dialogOpen.value = false;
+            },
+            onError: (errors) => {
+                photoError.value =
+                    Object.values(errors)[0] ?? 'Could not save this item.';
+            },
+            onFinish: () => {
+                savingItem.value = false;
+            },
+        },
+    );
 }
 
 function addProductImages(event: Event, target: 'new-item' | 'editor'): void {
@@ -182,6 +257,7 @@ function addProductImages(event: Event, target: 'new-item' | 'editor'): void {
             id: crypto.randomUUID(),
             name: file.name,
             src: URL.createObjectURL(file),
+            file,
         };
         objectUrls.add(image.src);
 
@@ -193,6 +269,25 @@ function addProductImages(event: Event, target: 'new-item' | 'editor'): void {
             photoDraftMainId.value ??= image.id;
         }
     });
+
+    const validImageNames = acceptedFiles
+        .filter(
+            (file) =>
+                file.type.startsWith('image/') && file.size <= 10 * 1024 * 1024,
+        )
+        .map((file) => file.name);
+
+    if (
+        target === 'editor' &&
+        photoEditorItem.value &&
+        validImageNames.length > 0
+    ) {
+        logInventoryActivity(
+            'Upload Image',
+            photoEditorItem.value,
+            validImageNames,
+        );
+    }
 
     if (rejectedFiles > 0) {
         photoError.value = 'Each product can have up to 10 images.';
@@ -228,23 +323,43 @@ function openPhotoEditor(item: InventoryItem): void {
 }
 
 function savePhotoEditor(): void {
-    if (!photoEditorItem.value) {
+    const currentTeam = page.props.currentTeam as { slug: string } | null;
+
+    if (!photoEditorItem.value || !currentTeam) {
         return;
     }
 
-    const retainedUrls = new Set(photoDraft.value.map((image) => image.src));
-    photoEditorItem.value.images.forEach((image) => {
-        if (image.src.startsWith('blob:') && !retainedUrls.has(image.src)) {
-            URL.revokeObjectURL(image.src);
-            objectUrls.delete(image.src);
-        }
-    });
+    const item = photoEditorItem.value;
 
-    photoEditorItem.value.images = photoDraft.value.map((image) => ({
-        ...image,
-    }));
-    photoEditorItem.value.mainImageId = photoDraftMainId.value;
-    photoEditorOpen.value = false;
+    router.post(
+        `/${currentTeam.slug}/inventories/${item.id}/images`,
+        {
+            image_ids: photoDraft.value.map((image) => image.id),
+            new_image_ids: photoDraft.value
+                .filter((image) => image.file)
+                .map((image) => image.id),
+            new_images: photoDraft.value
+                .map((image) => image.file)
+                .filter((file): file is File => file !== undefined),
+            main_image_id: photoDraftMainId.value,
+        },
+        {
+            forceFormData: true,
+            onSuccess: () => {
+                photoDraft.value.forEach((image) => {
+                    if (image.src.startsWith('blob:')) {
+                        URL.revokeObjectURL(image.src);
+                        objectUrls.delete(image.src);
+                    }
+                });
+                photoEditorOpen.value = false;
+            },
+            onError: (errors) => {
+                photoError.value =
+                    Object.values(errors)[0] ?? 'Could not save product images.';
+            },
+        },
+    );
 }
 
 function cancelPhotoEditor(): void {
@@ -733,7 +848,9 @@ defineOptions({
                     </div>
                 </section>
                 <DialogFooter
-                    ><Button type="submit">Add item</Button></DialogFooter
+                    ><Button type="submit" :disabled="savingItem">
+                        {{ savingItem ? 'Saving…' : 'Add item' }}
+                    </Button></DialogFooter
                 >
             </form>
         </DialogContent>

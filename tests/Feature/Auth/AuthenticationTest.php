@@ -47,6 +47,12 @@ test('users can authenticate using the login screen', function () {
 
     $this->assertAuthenticated();
     $response->assertRedirect(route('dashboard'));
+    $this->assertDatabaseHas('activity_log', [
+        'log_name' => 'authentication',
+        'description' => 'User logged in',
+        'causer_id' => $user->id,
+        'causer_type' => $user->getMorphClass(),
+    ]);
 });
 
 test('passkey login response redirects to the current team dashboard', function () {
