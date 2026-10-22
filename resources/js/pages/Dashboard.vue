@@ -3,23 +3,22 @@ import { Head } from '@inertiajs/vue3';
 import {
     Activity,
     AlertTriangle,
-    ArrowDownToLine,
     Boxes,
+    CircleDollarSign,
     GripVertical,
     PackageCheck,
-    Plus,
     RotateCcw,
     Warehouse,
 } from '@lucide/vue';
 import { GridStack, type GridStackWidget } from 'gridstack';
 import 'gridstack/dist/gridstack.min.css';
-import { nextTick, onBeforeUnmount, onMounted, ref, type Component } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, type Component } from 'vue';
 import { Button } from '@/components/ui/button';
 import PendingInvitationsModal from '@/components/PendingInvitationsModal.vue';
 import { dashboard } from '@/routes';
 import type { DashboardInvitation, Team } from '@/types';
 
-type WidgetKind = 'metric' | 'movement' | 'alerts' | 'activity' | 'capacity';
+type WidgetKind = 'metric' | 'movement' | 'alerts' | 'activity';
 
 type DashboardWidget = {
     id: string;
@@ -35,9 +34,43 @@ type DashboardWidget = {
     trend?: string;
 };
 
+type DashboardSummary = {
+    totalItems: number;
+    totalUnits: number;
+    lowStockCount: number;
+    outOfStockCount: number;
+    inventoryValue: number;
+};
+
+type DashboardReorderItem = {
+    sku: string;
+    name: string;
+    quantity: number;
+    reorderPoint: number;
+};
+
+type DashboardActivity = {
+    id: number;
+    description: string;
+    itemName: string;
+    sku: string;
+    userName: string;
+    createdAt: string;
+};
+
+type DashboardMovement = {
+    day: string;
+    received: number;
+    dispatched: number;
+};
+
 const props = defineProps<{
     pendingInvitations?: DashboardInvitation[];
     currentTeam?: Team | null;
+    summary?: DashboardSummary;
+    reorderItems?: DashboardReorderItem[];
+    activities?: DashboardActivity[];
+    movement?: DashboardMovement[];
 }>();
 
 defineOptions({
@@ -53,7 +86,81 @@ defineOptions({
     }),
 });
 
-const initialWidgets: DashboardWidget[] = [
+const summary = computed<DashboardSummary>(
+    () =>
+        props.summary ?? {
+            totalItems: 0,
+            totalUnits: 0,
+            lowStockCount: 0,
+            outOfStockCount: 0,
+            inventoryValue: 0,
+        },
+);
+
+const reorderItems = computed<DashboardReorderItem[]>(
+    () => props.reorderItems ?? [],
+);
+
+const activities = computed<DashboardActivity[]>(() => props.activities ?? []);
+
+const movement = computed<DashboardMovement[]>(() => props.movement ?? []);
+
+const numberFormatter = new Intl.NumberFormat('en-US');
+const currencyFormatter = new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+});
+
+function formatNumber(value: number): string {
+    return numberFormatter.format(value);
+}
+
+function formatCurrency(value: number): string {
+    return currencyFormatter.format(value);
+}
+
+function formatActivityTime(value: string): string {
+    const date = new Date(value);
+
+    if (Number.isNaN(date.getTime())) {
+        return value;
+    }
+
+    return date.toLocaleString(undefined, {
+        month: 'short',
+        day: 'numeric',
+        hour: 'numeric',
+        minute: '2-digit',
+    });
+}
+
+const movementMax = computed<number>(() =>
+    Math.max(
+        1,
+        ...movement.value.flatMap((entry) => [
+            entry.received,
+            entry.dispatched,
+        ]),
+    ),
+);
+
+const hasMovement = computed<boolean>(() =>
+    movement.value.some((entry) => entry.received > 0 || entry.dispatched > 0),
+);
+
+function barHeight(value: number): string {
+    return `${(value / movementMax.value) * 100}%`;
+}
+
+function reorderFillPercentage(quantity: number, reorderPoint: number): number {
+    if (reorderPoint <= 0) {
+        return 0;
+    }
+
+    return Math.min(100, (quantity / reorderPoint) * 100);
+}
+
+const initialWidgets = computed<DashboardWidget[]>(() => [
     {
         id: 'stock-on-hand',
         title: 'Stock on hand',
@@ -63,9 +170,9 @@ const initialWidgets: DashboardWidget[] = [
         y: 0,
         w: 4,
         h: 2,
-        value: '18,420',
-        description: 'Sellable units across all locations',
-        trend: '+4.8% this week',
+        value: formatNumber(summary.value.totalUnits),
+        description: `${formatNumber(summary.value.totalItems)} products`,
+        trend: `${formatNumber(summary.value.outOfStockCount)} out of stock`,
     },
     {
         id: 'low-stock',
@@ -76,22 +183,22 @@ const initialWidgets: DashboardWidget[] = [
         y: 0,
         w: 4,
         h: 2,
-        value: '12',
-        description: 'SKUs below their reorder point',
-        trend: '4 need attention',
+        value: formatNumber(summary.value.lowStockCount),
+        description: 'At or below reorder point',
+        trend: `${formatNumber(summary.value.totalItems)} products tracked`,
     },
     {
-        id: 'incoming-stock',
-        title: 'Incoming stock',
+        id: 'inventory-value',
+        title: 'Inventory value',
         kind: 'metric',
-        icon: ArrowDownToLine,
+        icon: CircleDollarSign,
         x: 8,
         y: 0,
         w: 4,
         h: 2,
-        value: '1,240',
-        description: 'Units expected this week',
-        trend: '3 purchase orders',
+        value: formatCurrency(summary.value.inventoryValue),
+        description: 'Units at current unit cost',
+        trend: `${formatNumber(summary.value.totalItems)} products valued`,
     },
     {
         id: 'stock-movement',
@@ -123,51 +230,14 @@ const initialWidgets: DashboardWidget[] = [
         w: 12,
         h: 4,
     },
-];
+]);
 
-const widgets = ref<DashboardWidget[]>(
-    initialWidgets.map((widget) => ({ ...widget })),
-);
+const widgets = computed<DashboardWidget[]>(() => initialWidgets.value);
 const isEditing = ref(true);
-const hasCapacityWidget = ref(false);
 const gridElement = ref<HTMLDivElement | null>(null);
 
 let grid: GridStack | null = null;
 let defaultLayout: GridStackWidget[] = [];
-
-const movementBars = [
-    { day: 'Mon', received: 48, dispatched: 32 },
-    { day: 'Tue', received: 68, dispatched: 42 },
-    { day: 'Wed', received: 38, dispatched: 58 },
-    { day: 'Thu', received: 78, dispatched: 46 },
-    { day: 'Fri', received: 56, dispatched: 72 },
-    { day: 'Sat', received: 28, dispatched: 36 },
-    { day: 'Sun', received: 44, dispatched: 22 },
-];
-
-const reorderItems = [
-    { sku: 'BX-2048', name: 'Shipping carton · Large', stock: 8, minimum: 24 },
-    { sku: 'GL-1180', name: 'Glass bottle · 500 ml', stock: 14, minimum: 30 },
-    { sku: 'PK-0093', name: 'Kraft pouch · Small', stock: 19, minimum: 40 },
-];
-
-const activityItems = [
-    {
-        action: 'Purchase order received',
-        reference: 'PO-10428 · North warehouse',
-        time: '9:42 AM',
-    },
-    {
-        action: 'Stock transfer completed',
-        reference: 'TR-00816 · East → Central',
-        time: '9:18 AM',
-    },
-    {
-        action: 'Cycle count submitted',
-        reference: 'CC-00193 · 12 SKUs counted',
-        time: '8:56 AM',
-    },
-];
 
 onMounted(() => {
     if (!gridElement.value) {
@@ -210,54 +280,9 @@ function toggleEditing(): void {
     grid?.enableResize(isEditing.value);
 }
 
-async function addCapacityWidget(): Promise<void> {
-    if (!grid || hasCapacityWidget.value) {
-        return;
-    }
-
-    const widget: DashboardWidget = {
-        id: 'warehouse-capacity',
-        title: 'Warehouse capacity',
-        kind: 'capacity',
-        icon: Warehouse,
-        x: 0,
-        y: 10,
-        w: 4,
-        h: 3,
-    };
-
-    widgets.value.push(widget);
-    hasCapacityWidget.value = true;
-    await nextTick();
-
-    const element = gridElement.value?.querySelector<HTMLElement>(
-        `[gs-id="${widget.id}"]`,
-    );
-
-    if (element) {
-        grid.makeWidget(element);
-    }
-}
-
-async function resetLayout(): Promise<void> {
+function resetLayout(): void {
     if (!grid) {
         return;
-    }
-
-    if (hasCapacityWidget.value) {
-        const capacityElement = gridElement.value?.querySelector<HTMLElement>(
-            '[gs-id="warehouse-capacity"]',
-        );
-
-        if (capacityElement) {
-            grid.removeWidget(capacityElement);
-        }
-
-        widgets.value = widgets.value.filter(
-            (widget) => widget.id !== 'warehouse-capacity',
-        );
-        hasCapacityWidget.value = false;
-        await nextTick();
     }
 
     grid.load(defaultLayout, false);
@@ -268,14 +293,16 @@ async function resetLayout(): Promise<void> {
 </script>
 
 <template>
-    <Head title="Dashboard" />
-
-    <PendingInvitationsModal
-        v-if="props.pendingInvitations && props.pendingInvitations.length > 0"
-        :invitations="props.pendingInvitations"
-    />
-
     <main class="flex min-h-full flex-1 flex-col gap-5 p-4 sm:p-6">
+        <Head title="Dashboard" />
+
+        <PendingInvitationsModal
+            v-if="
+                props.pendingInvitations && props.pendingInvitations.length > 0
+            "
+            :invitations="props.pendingInvitations"
+        />
+
         <header
             class="flex flex-col justify-between gap-4 sm:flex-row sm:items-end"
         >
@@ -284,24 +311,15 @@ async function resetLayout(): Promise<void> {
                     Inventory overview
                 </h1>
                 <p class="mt-1 max-w-2xl text-sm text-muted-foreground">
-                    Sample warehouse data. Drag and resize widgets to try out
-                    your dashboard layout.
+                    Live inventory data for your team. Drag and resize widgets
+                    to customize your dashboard layout.
                 </p>
             </div>
 
             <div class="flex flex-wrap items-center gap-2">
-                <Button
-                    variant="outline"
-                    size="sm"
-                    :disabled="hasCapacityWidget"
-                    @click="addCapacityWidget"
-                >
-                    <Plus class="size-4" />
-                    Add widget
-                </Button>
                 <Button variant="outline" size="sm" @click="resetLayout">
                     <RotateCcw class="size-4" />
-                    Reset demo
+                    Reset layout
                 </Button>
                 <Button
                     size="sm"
@@ -384,6 +402,7 @@ async function resetLayout(): Promise<void> {
                                 </p>
                             </div>
                             <p
+                                v-if="widget.trend"
                                 class="mt-4 text-xs font-medium text-muted-foreground"
                             >
                                 {{ widget.trend }}
@@ -409,40 +428,47 @@ async function resetLayout(): Promise<void> {
                                     />
                                     Dispatched</span
                                 >
-                                <span class="ml-auto"
-                                    >Last 7 days · sample</span
-                                >
+                                <span class="ml-auto">Last 7 days</span>
                             </div>
+
                             <div
+                                v-if="hasMovement"
                                 class="flex min-h-28 flex-1 items-end justify-around gap-3 border-b px-2 pt-2"
                             >
                                 <div
-                                    v-for="bar in movementBars"
+                                    v-for="bar in movement"
                                     :key="bar.day"
                                     class="flex h-full min-w-6 flex-1 items-end justify-center gap-1"
                                 >
                                     <span
                                         class="w-2.5 rounded-t-sm bg-primary/85 sm:w-4"
-                                        :style="{ height: `${bar.received}%` }"
-                                        :aria-label="`${bar.day}: ${bar.received}% received`"
+                                        :style="{
+                                            height: barHeight(bar.received),
+                                        }"
+                                        :aria-label="`${bar.day}: ${bar.received} received`"
                                     />
                                     <span
                                         class="w-2.5 rounded-t-sm bg-muted-foreground/35 sm:w-4"
                                         :style="{
-                                            height: `${bar.dispatched}%`,
+                                            height: barHeight(bar.dispatched),
                                         }"
-                                        :aria-label="`${bar.day}: ${bar.dispatched}% dispatched`"
+                                        :aria-label="`${bar.day}: ${bar.dispatched} dispatched`"
                                     />
                                 </div>
                             </div>
                             <div
+                                v-else
+                                class="flex min-h-28 flex-1 items-center justify-center border-b px-2 text-sm text-muted-foreground"
+                            >
+                                No stock movement in the last 7 days.
+                            </div>
+
+                            <div
                                 class="mt-2 flex justify-around text-xs text-muted-foreground"
                             >
-                                <span
-                                    v-for="bar in movementBars"
-                                    :key="bar.day"
-                                    >{{ bar.day }}</span
-                                >
+                                <span v-for="bar in movement" :key="bar.day">{{
+                                    bar.day
+                                }}</span>
                             </div>
                         </div>
 
@@ -450,119 +476,128 @@ async function resetLayout(): Promise<void> {
                             v-else-if="widget.kind === 'alerts'"
                             class="flex flex-1 flex-col divide-y"
                         >
-                            <div
-                                v-for="item in reorderItems"
-                                :key="item.sku"
-                                class="px-4 py-3"
-                            >
+                            <template v-if="reorderItems.length > 0">
                                 <div
-                                    class="flex items-start justify-between gap-3"
-                                >
-                                    <div class="min-w-0">
-                                        <p class="truncate text-sm font-medium">
-                                            {{ item.name }}
-                                        </p>
-                                        <p
-                                            class="mt-1 text-xs text-muted-foreground"
-                                        >
-                                            {{ item.sku }}
-                                        </p>
-                                    </div>
-                                    <span
-                                        class="shrink-0 text-xs font-medium text-destructive"
-                                        >{{ item.stock }} left</span
-                                    >
-                                </div>
-                                <div
-                                    class="mt-2 h-1.5 overflow-hidden rounded-full bg-muted"
-                                    :aria-label="`${item.stock} of ${item.minimum} units remaining`"
+                                    v-for="item in reorderItems"
+                                    :key="item.sku"
+                                    class="px-4 py-3"
                                 >
                                     <div
-                                        class="h-full rounded-full bg-destructive"
-                                        :style="{
-                                            width: `${(item.stock / item.minimum) * 100}%`,
-                                        }"
-                                    />
+                                        class="flex items-start justify-between gap-3"
+                                    >
+                                        <div class="min-w-0">
+                                            <p
+                                                class="truncate text-sm font-medium"
+                                            >
+                                                {{ item.name }}
+                                            </p>
+                                            <p
+                                                class="mt-1 text-xs text-muted-foreground"
+                                            >
+                                                {{ item.sku }}
+                                            </p>
+                                        </div>
+                                        <span
+                                            class="shrink-0 text-xs font-medium text-destructive"
+                                            >{{ item.quantity }} of
+                                            {{ item.reorderPoint }}</span
+                                        >
+                                    </div>
+                                    <div
+                                        class="mt-2 h-1.5 overflow-hidden rounded-full bg-muted"
+                                        :aria-label="`${item.quantity} of ${item.reorderPoint} reorder point units remaining`"
+                                    >
+                                        <div
+                                            class="h-full rounded-full bg-destructive"
+                                            :style="{
+                                                width: `${reorderFillPercentage(item.quantity, item.reorderPoint)}%`,
+                                            }"
+                                        />
+                                    </div>
                                 </div>
-                            </div>
-                            <p
-                                class="mt-auto px-4 py-3 text-xs text-muted-foreground"
+                                <p
+                                    class="mt-auto px-4 py-3 text-xs text-muted-foreground"
+                                >
+                                    Showing {{ reorderItems.length }} of
+                                    {{ summary.lowStockCount }} low-stock items.
+                                </p>
+                            </template>
+                            <div
+                                v-else
+                                class="flex flex-1 items-center justify-center px-4 py-6 text-center text-sm text-muted-foreground"
                             >
-                                Showing 3 of 12 items below minimum.
-                            </p>
+                                No items are at or below their reorder point.
+                            </div>
                         </div>
 
                         <div
                             v-else-if="widget.kind === 'activity'"
                             class="flex flex-1 flex-col divide-y"
                         >
-                            <div
-                                v-for="item in activityItems"
-                                :key="item.reference"
-                                class="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 px-4 py-3"
-                            >
-                                <div class="flex min-w-0 items-start gap-3">
-                                    <span
-                                        class="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground"
-                                    >
-                                        <PackageCheck class="size-3.5" />
-                                    </span>
-                                    <div class="min-w-0">
-                                        <p class="text-sm font-medium">
-                                            {{ item.action }}
+                            <template v-if="activities.length > 0">
+                                <div
+                                    v-for="item in activities"
+                                    :key="item.id"
+                                    class="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 px-4 py-3"
+                                >
+                                    <div class="flex min-w-0 items-start gap-3">
+                                        <span
+                                            class="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground"
+                                        >
+                                            <PackageCheck class="size-3.5" />
+                                        </span>
+                                        <div class="min-w-0">
+                                            <p class="text-sm font-medium">
+                                                {{ item.description }}
+                                            </p>
+                                            <p
+                                                class="mt-0.5 truncate text-xs text-muted-foreground"
+                                            >
+                                                {{
+                                                    item.itemName ||
+                                                    item.sku ||
+                                                    'Unknown item'
+                                                }}
+                                                <template
+                                                    v-if="
+                                                        item.itemName &&
+                                                        item.sku
+                                                    "
+                                                >
+                                                    · {{ item.sku }}
+                                                </template>
+                                            </p>
+                                        </div>
+                                    </div>
+                                    <div class="shrink-0 text-right">
+                                        <p
+                                            class="text-xs text-muted-foreground"
+                                        >
+                                            {{
+                                                formatActivityTime(
+                                                    item.createdAt,
+                                                )
+                                            }}
                                         </p>
                                         <p
-                                            class="mt-0.5 truncate text-xs text-muted-foreground"
+                                            class="text-xs text-muted-foreground"
                                         >
-                                            {{ item.reference }}
+                                            {{ item.userName }}
                                         </p>
                                     </div>
                                 </div>
-                                <span
-                                    class="shrink-0 text-xs text-muted-foreground"
-                                    >{{ item.time }}</span
-                                >
+                            </template>
+                            <div
+                                v-else
+                                class="flex flex-1 items-center justify-center px-4 py-6 text-center text-sm text-muted-foreground"
+                            >
+                                No inventory activity yet.
                             </div>
-                        </div>
-
-                        <div
-                            v-else
-                            class="flex flex-1 flex-col justify-between p-4"
-                        >
-                            <div>
-                                <div
-                                    class="flex items-baseline justify-between gap-3"
-                                >
-                                    <p
-                                        class="text-3xl font-semibold tracking-tight tabular-nums"
-                                    >
-                                        78%
-                                    </p>
-                                    <p class="text-xs text-muted-foreground">
-                                        Sample capacity
-                                    </p>
-                                </div>
-                                <div
-                                    class="mt-4 h-2 overflow-hidden rounded-full bg-muted"
-                                >
-                                    <div
-                                        class="h-full w-[78%] rounded-full bg-primary"
-                                    />
-                                </div>
-                            </div>
-                            <p class="mt-4 text-sm text-muted-foreground">
-                                North warehouse · 3,120 of 4,000 pallet spaces
-                            </p>
                         </div>
                     </article>
                 </div>
             </div>
         </div>
-
-        <p class="text-xs text-muted-foreground">
-            Demo figures are illustrative and are not connected to inventory
-            records.
-        </p>
     </main>
 </template>
 
