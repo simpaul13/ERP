@@ -1,18 +1,22 @@
 <?php
 
+use App\Enums\TeamRole;
 use App\Models\InventoryItem;
+use App\Models\Team;
 use App\Models\User;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Storage;
 use Inertia\Testing\AssertableInertia as Assert;
+use Spatie\Activitylog\Models\Activity;
 
 test('team members can create inventory items that are saved with their photos', function () {
     Storage::fake('public');
     $user = User::factory()->create();
     $team = $user->personalTeam();
     $imageId = fake()->uuid();
+    $indexUrl = route('inventories.index', ['current_team' => $team->slug]);
 
-    $response = $this->actingAs($user)->post(
+    $response = $this->actingAs($user)->from($indexUrl)->post(
         route('inventories.store', ['current_team' => $team->slug]),
         [
             'name' => 'Shipping carton',
@@ -28,7 +32,7 @@ test('team members can create inventory items that are saved with their photos',
         ],
     );
 
-    $response->assertRedirect(route('inventories.index', ['current_team' => $team->slug]));
+    $response->assertRedirect($indexUrl);
     $item = InventoryItem::query()->firstOrFail();
 
     expect($item->team_id)->toBe($team->id)
@@ -52,16 +56,18 @@ test('inventory sku must be unique within a team', function () {
         'unit_cost' => 1.25,
     ]);
 
-    $response = $this->actingAs($user)->post(
-        route('inventories.store', ['current_team' => $team->slug]),
-        [
-            'name' => 'Duplicate carton',
-            'sku' => 'BX-2048',
-            'quantity' => 0,
-            'reorder_point' => 0,
-            'unit_cost' => 0,
-        ],
-    );
+    $response = $this->actingAs($user)
+        ->from(route('inventories.index', ['current_team' => $team->slug]))
+        ->post(
+            route('inventories.store', ['current_team' => $team->slug]),
+            [
+                'name' => 'Duplicate carton',
+                'sku' => 'BX-2048',
+                'quantity' => 0,
+                'reorder_point' => 0,
+                'unit_cost' => 0,
+            ],
+        );
 
     $response->assertSessionHasErrors('sku');
     $this->assertDatabaseCount('inventory_items', 1);
@@ -84,10 +90,10 @@ test('inventory page loads saved items for the current team', function () {
     $response->assertOk();
     $response->assertInertia(fn (Assert $page) => $page
         ->component('inventories/Index')
-        ->has('inventoryItems', 1)
-        ->where('inventoryItems.0.sku', 'BX-2048')
-        ->where('inventoryItems.0.name', 'Shipping carton')
-        ->where('inventoryItems.0.reorderPoint', 5),
+        ->has('inventoryItems.data', 1)
+        ->where('inventoryItems.data.0.sku', 'BX-2048')
+        ->where('inventoryItems.data.0.name', 'Shipping carton')
+        ->where('inventoryItems.data.0.reorderPoint', 5),
     );
 });
 
@@ -113,8 +119,9 @@ test('team members can save product image changes for an inventory item', functi
         ]],
         'main_image_id' => $existingImageId,
     ]);
+    $indexUrl = route('inventories.index', ['current_team' => $team->slug]);
 
-    $response = $this->actingAs($user)->post(
+    $response = $this->actingAs($user)->from($indexUrl)->post(
         route('inventories.images.update', [
             'current_team' => $team->slug,
             'inventoryItem' => $item->id,
@@ -127,10 +134,457 @@ test('team members can save product image changes for an inventory item', functi
         ],
     );
 
-    $response->assertRedirect(route('inventories.index', ['current_team' => $team->slug]));
+    $response->assertRedirect($indexUrl);
     $item->refresh();
 
     expect($item->images)->toHaveCount(2)
         ->and($item->main_image_id)->toBe($newImageId)
         ->and(Storage::disk('public')->allFiles('inventory/'.$team->id))->toHaveCount(2);
+});
+
+test('inventory items can be updated and the changed fields are logged', function () {
+    $user = User::factory()->create();
+    $team = $user->personalTeam();
+    $item = $team->inventoryItems()->create([
+        'sku' => 'BX-2048',
+        'name' => 'Shipping carton',
+        'category' => 'Packaging',
+        'location' => 'North warehouse',
+        'quantity' => 25,
+        'reorder_point' => 5,
+        'unit_cost' => 2.50,
+    ]);
+    $indexUrl = route('inventories.index', ['current_team' => $team->slug]);
+
+    $response = $this->actingAs($user)->from($indexUrl)->patch(
+        route('inventories.update', [
+            'current_team' => $team->slug,
+            'inventoryItem' => $item->id,
+        ]),
+        [
+            'name' => '  Insulated carton  ',
+            'sku' => ' bx-4096 ',
+            'category' => 'Packaging',
+            'location' => 'South warehouse',
+            'quantity' => 999,
+            'reorder_point' => 8,
+            'unit_cost' => '3.25',
+        ],
+    );
+
+    $response->assertRedirect($indexUrl);
+    $item->refresh();
+
+    expect($item->name)->toBe('Insulated carton')
+        ->and($item->sku)->toBe('BX-4096')
+        ->and($item->location)->toBe('South warehouse')
+        ->and($item->reorder_point)->toBe(8)
+        ->and($item->quantity)->toBe(25);
+
+    $activity = Activity::query()
+        ->where('description', 'Inventory Updated')
+        ->firstOrFail();
+
+    expect($activity->getProperty('team_id'))->toBe($team->id)
+        ->and($activity->getProperty('item_name'))->toBe('Insulated carton')
+        ->and($activity->getProperty('sku'))->toBe('BX-4096')
+        ->and($activity->getProperty('changes.name.from'))->toBe('Shipping carton')
+        ->and($activity->getProperty('changes.name.to'))->toBe('Insulated carton')
+        ->and($activity->getProperty('changes'))->not->toHaveKey('category')
+        ->and($activity->causer_id)->toBe($user->id);
+});
+
+test('duplicate sku on update is rejected', function () {
+    $user = User::factory()->create();
+    $team = $user->personalTeam();
+    $item = $team->inventoryItems()->create([
+        'sku' => 'BX-2048',
+        'name' => 'Shipping carton',
+        'quantity' => 1,
+        'reorder_point' => 1,
+        'unit_cost' => 1,
+    ]);
+    $team->inventoryItems()->create([
+        'sku' => 'BX-4096',
+        'name' => 'Other carton',
+        'quantity' => 1,
+        'reorder_point' => 1,
+        'unit_cost' => 1,
+    ]);
+
+    $response = $this->actingAs($user)
+        ->from(route('inventories.index', ['current_team' => $team->slug]))
+        ->patch(
+            route('inventories.update', [
+                'current_team' => $team->slug,
+                'inventoryItem' => $item->id,
+            ]),
+            [
+                'name' => 'Shipping carton',
+                'sku' => 'BX-4096',
+                'reorder_point' => 1,
+                'unit_cost' => 1,
+            ],
+        );
+
+    $response->assertSessionHasErrors('sku');
+});
+
+test('deleting an inventory item removes it and its stored images', function () {
+    Storage::fake('public');
+    $user = User::factory()->create();
+    $team = $user->personalTeam();
+    $path = 'inventory/'.$team->id.'/carton.png';
+    Storage::disk('public')->put($path, 'image');
+    $item = $team->inventoryItems()->create([
+        'sku' => 'BX-2048',
+        'name' => 'Shipping carton',
+        'quantity' => 1,
+        'reorder_point' => 1,
+        'unit_cost' => 1,
+        'images' => [[
+            'id' => fake()->uuid(),
+            'name' => 'carton.png',
+            'src' => Storage::disk('public')->url($path),
+            'path' => $path,
+        ]],
+    ]);
+    $indexUrl = route('inventories.index', ['current_team' => $team->slug]);
+
+    $response = $this->actingAs($user)->from($indexUrl)->delete(
+        route('inventories.destroy', [
+            'current_team' => $team->slug,
+            'inventoryItem' => $item->id,
+        ]),
+    );
+
+    $response->assertRedirect($indexUrl);
+    $this->assertDatabaseMissing('inventory_items', ['id' => $item->id]);
+    Storage::disk('public')->assertMissing($path);
+
+    $activity = Activity::query()
+        ->where('description', 'Inventory Deleted')
+        ->firstOrFail();
+
+    expect($activity->getProperty('item_name'))->toBe('Shipping carton')
+        ->and($activity->getProperty('sku'))->toBe('BX-2048')
+        ->and($activity->getProperty('image_names'))->toBe(['carton.png'])
+        ->and($activity->getProperty('team_id'))->toBe($team->id);
+});
+
+test('receiving stock persists the quantity and logs before and after', function () {
+    $user = User::factory()->create();
+    $team = $user->personalTeam();
+    $item = $team->inventoryItems()->create([
+        'sku' => 'BX-2048',
+        'name' => 'Shipping carton',
+        'quantity' => 5,
+        'reorder_point' => 2,
+        'unit_cost' => 1,
+    ]);
+    $indexUrl = route('inventories.index', ['current_team' => $team->slug]);
+
+    $response = $this->actingAs($user)->from($indexUrl)->post(
+        route('inventories.stock', [
+            'current_team' => $team->slug,
+            'inventoryItem' => $item->id,
+        ]),
+        [
+            'direction' => 'receive',
+            'amount' => 7,
+            'reason' => 'Delivery',
+        ],
+    );
+
+    $response->assertRedirect($indexUrl);
+    expect($item->refresh()->quantity)->toBe(12);
+
+    $activity = Activity::query()
+        ->where('description', 'Inventory Stock Adjusted')
+        ->firstOrFail();
+
+    expect($activity->getProperty('team_id'))->toBe($team->id)
+        ->and($activity->getProperty('direction'))->toBe('receive')
+        ->and($activity->getProperty('amount'))->toBe(7)
+        ->and($activity->getProperty('quantity_before'))->toBe(5)
+        ->and($activity->getProperty('quantity_after'))->toBe(12)
+        ->and($activity->getProperty('reason'))->toBe('Delivery');
+});
+
+test('removing stock never drops the quantity below zero', function () {
+    $user = User::factory()->create();
+    $team = $user->personalTeam();
+    $item = $team->inventoryItems()->create([
+        'sku' => 'BX-2048',
+        'name' => 'Shipping carton',
+        'quantity' => 3,
+        'reorder_point' => 2,
+        'unit_cost' => 1,
+    ]);
+
+    $response = $this->actingAs($user)
+        ->from(route('inventories.index', ['current_team' => $team->slug]))
+        ->post(
+            route('inventories.stock', [
+                'current_team' => $team->slug,
+                'inventoryItem' => $item->id,
+            ]),
+            [
+                'direction' => 'remove',
+                'amount' => 10,
+            ],
+        );
+
+    $response->assertRedirect();
+    expect($item->refresh()->quantity)->toBe(0);
+
+    $activity = Activity::query()
+        ->where('description', 'Inventory Stock Adjusted')
+        ->firstOrFail();
+
+    expect($activity->getProperty('quantity_before'))->toBe(3)
+        ->and($activity->getProperty('quantity_after'))->toBe(0);
+});
+
+test('members cannot perform inventory mutations', function () {
+    $owner = User::factory()->create();
+    $member = User::factory()->create();
+    $team = Team::factory()->create();
+    $team->members()->attach($owner, ['role' => TeamRole::Owner->value]);
+    $team->members()->attach($member, ['role' => TeamRole::Member->value]);
+    $item = $team->inventoryItems()->create([
+        'sku' => 'BX-2048',
+        'name' => 'Shipping carton',
+        'quantity' => 5,
+        'reorder_point' => 2,
+        'unit_cost' => 1,
+    ]);
+    $indexUrl = route('inventories.index', ['current_team' => $team->slug]);
+
+    $this->actingAs($member)->from($indexUrl)->post(
+        route('inventories.store', ['current_team' => $team->slug]),
+        [
+            'name' => 'Forbidden carton',
+            'sku' => 'BX-0000',
+            'quantity' => 1,
+            'reorder_point' => 1,
+            'unit_cost' => 1,
+        ],
+    )->assertForbidden();
+
+    $this->actingAs($member)->from($indexUrl)->patch(
+        route('inventories.update', [
+            'current_team' => $team->slug,
+            'inventoryItem' => $item->id,
+        ]),
+        [
+            'name' => 'Renamed carton',
+            'sku' => 'BX-2048',
+            'reorder_point' => 2,
+            'unit_cost' => 1,
+        ],
+    )->assertForbidden();
+
+    $this->actingAs($member)->from($indexUrl)->post(
+        route('inventories.stock', [
+            'current_team' => $team->slug,
+            'inventoryItem' => $item->id,
+        ]),
+        [
+            'direction' => 'receive',
+            'amount' => 1,
+        ],
+    )->assertForbidden();
+
+    $this->actingAs($member)->from($indexUrl)->delete(
+        route('inventories.destroy', [
+            'current_team' => $team->slug,
+            'inventoryItem' => $item->id,
+        ]),
+    )->assertForbidden();
+
+    $this->assertDatabaseHas('inventory_items', [
+        'id' => $item->id,
+        'name' => 'Shipping carton',
+        'quantity' => 5,
+    ]);
+
+    $this->actingAs($member)
+        ->get($indexUrl)
+        ->assertInertia(fn (Assert $page) => $page->where('canManage', false));
+});
+
+test('inventory items from another team return not found', function () {
+    $user = User::factory()->create();
+    $otherUser = User::factory()->create();
+    $otherTeam = $otherUser->personalTeam();
+    $item = $otherTeam->inventoryItems()->create([
+        'sku' => 'BX-2048',
+        'name' => 'Other carton',
+        'quantity' => 5,
+        'reorder_point' => 2,
+        'unit_cost' => 1,
+    ]);
+    $indexUrl = route('inventories.index', ['current_team' => $user->currentTeam->slug]);
+
+    $this->actingAs($user)->from($indexUrl)->patch(
+        route('inventories.update', [
+            'current_team' => $user->currentTeam->slug,
+            'inventoryItem' => $item->id,
+        ]),
+        [
+            'name' => 'Hijacked carton',
+            'sku' => 'BX-2048',
+            'reorder_point' => 2,
+            'unit_cost' => 1,
+        ],
+    )->assertNotFound();
+
+    expect($item->refresh()->name)->toBe('Other carton');
+});
+
+test('inventory index paginates items and reports team summary values', function () {
+    $user = User::factory()->create();
+    $team = $user->personalTeam();
+
+    foreach (range(1, 30) as $number) {
+        $team->inventoryItems()->create([
+            'sku' => 'SKU-'.str_pad((string) $number, 2, '0', STR_PAD_LEFT),
+            'name' => 'Item '.str_pad((string) $number, 2, '0', STR_PAD_LEFT),
+            'quantity' => 1,
+            'reorder_point' => 5,
+            'unit_cost' => 1.50,
+        ]);
+    }
+
+    $response = $this->actingAs($user)
+        ->get(route('inventories.index', ['current_team' => $team->slug]));
+
+    $response->assertInertia(fn (Assert $page) => $page
+        ->has('inventoryItems.data', 25)
+        ->where('inventoryItems.total', 30)
+        ->where('inventoryItems.per_page', 25)
+        ->where('summary.totalItems', 30)
+        ->where('summary.totalUnits', 30)
+        ->where('summary.lowStockCount', 30)
+        ->where('summary.outOfStockCount', 0)
+        ->where('summary.inventoryValue', 45),
+    );
+
+    $this->actingAs($user)
+        ->get(route('inventories.index', [
+            'current_team' => $team->slug,
+            'page' => 2,
+        ]))
+        ->assertInertia(fn (Assert $page) => $page
+            ->has('inventoryItems.data', 5)
+            ->where('inventoryItems.current_page', 2),
+        );
+});
+
+test('inventory index supports server side search and status filters', function () {
+    $user = User::factory()->create();
+    $team = $user->personalTeam();
+    $team->inventoryItems()->create([
+        'sku' => 'AA-1',
+        'name' => 'Widget Alpha',
+        'category' => 'Tools',
+        'location' => 'Shelf A',
+        'quantity' => 10,
+        'reorder_point' => 2,
+        'unit_cost' => 1,
+    ]);
+    $team->inventoryItems()->create([
+        'sku' => 'BB-2',
+        'name' => 'Gadget Beta',
+        'category' => 'Packaging',
+        'location' => 'Shelf B',
+        'quantity' => 1,
+        'reorder_point' => 5,
+        'unit_cost' => 1,
+    ]);
+    $team->inventoryItems()->create([
+        'sku' => 'CC-3',
+        'name' => 'Doohickey',
+        'category' => 'Tools',
+        'location' => 'Shelf C',
+        'quantity' => 0,
+        'reorder_point' => 3,
+        'unit_cost' => 1,
+    ]);
+
+    $indexUrl = route('inventories.index', ['current_team' => $team->slug]);
+
+    $this->actingAs($user)
+        ->get($indexUrl.'?search=gadget')
+        ->assertInertia(fn (Assert $page) => $page
+            ->has('inventoryItems.data', 1)
+            ->where('inventoryItems.data.0.sku', 'BB-2')
+            ->where('filters.search', 'gadget'),
+        );
+
+    $this->actingAs($user)
+        ->get($indexUrl.'?search=Shelf+A')
+        ->assertInertia(fn (Assert $page) => $page
+            ->has('inventoryItems.data', 1)
+            ->where('inventoryItems.data.0.sku', 'AA-1'),
+        );
+
+    $this->actingAs($user)
+        ->get($indexUrl.'?status=low')
+        ->assertInertia(fn (Assert $page) => $page
+            ->has('inventoryItems.data', 1)
+            ->where('inventoryItems.data.0.sku', 'BB-2')
+            ->where('filters.status', 'low'),
+        );
+
+    $this->actingAs($user)
+        ->get($indexUrl.'?status=out')
+        ->assertInertia(fn (Assert $page) => $page
+            ->has('inventoryItems.data', 1)
+            ->where('inventoryItems.data.0.sku', 'CC-3')
+            ->where('filters.status', 'out'),
+        );
+
+    $this->actingAs($user)
+        ->get($indexUrl.'?status=all')
+        ->assertInertia(fn (Assert $page) => $page
+            ->has('inventoryItems.data', 3)
+            ->where('filters.status', 'all'),
+        );
+});
+
+test('inventory index exposes team activities and management permissions', function () {
+    $user = User::factory()->create(['name' => 'Taylor Otwell']);
+    $team = $user->personalTeam();
+    $indexUrl = route('inventories.index', ['current_team' => $team->slug]);
+
+    $this->actingAs($user)->from($indexUrl)->post(
+        route('inventories.store', ['current_team' => $team->slug]),
+        [
+            'name' => 'Shipping carton',
+            'sku' => 'BX-2048',
+            'quantity' => 2,
+            'reorder_point' => 1,
+            'unit_cost' => 1,
+        ],
+    )->assertRedirect($indexUrl);
+
+    $activity = Activity::query()
+        ->where('description', 'Inventory Created')
+        ->firstOrFail();
+
+    $this->actingAs($user)
+        ->get($indexUrl)
+        ->assertInertia(fn (Assert $page) => $page
+            ->has('activities', 1)
+            ->where('activities.0.description', 'Inventory Created')
+            ->where('activities.0.itemName', 'Shipping carton')
+            ->where('activities.0.sku', 'BX-2048')
+            ->where('activities.0.userName', 'Taylor Otwell')
+            ->where('activities.0.createdAt', $activity->created_at->toIso8601String())
+            ->where('canManage', true)
+            ->where('filters.search', '')
+            ->where('filters.status', 'all'),
+        );
 });

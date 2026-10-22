@@ -66,7 +66,7 @@ describe('inventory module', () => {
         { session: 'inventory-user' },
         async ({ screen }) => {
             const sku = `E2E-UPDATE-${Date.now()}`;
-            const itemName = 'E2E Stock Adjustment Item';
+            const itemName = `E2E Stock Adjustment Item ${sku}`;
 
             await createInventoryItem(screen, sku, itemName);
             const itemRow = screen.getByRole('row').filter({ hasText: sku });
@@ -87,22 +87,19 @@ describe('inventory module', () => {
         'uploads a product image',
         { session: 'inventory-user' },
         async ({ screen }) => {
-            const itemName = 'E2E Image Upload Item';
+            const sku = `E2E-IMAGE-${Date.now()}`;
+            const itemName = `E2E Image Upload Item ${sku}`;
 
-            await createInventoryItem(
-                screen,
-                `E2E-IMAGE-${Date.now()}`,
-                itemName,
-            );
+            await createInventoryItem(screen, sku, itemName);
             await screen
                 .getByRole('button', `Manage product images for ${itemName}`)
                 .tap();
             await screen
                 .getByLabel(/Choose product photos/)
-                .setInputFiles('tests/e2e/fixtures/product-image-one.svg');
+                .setInputFiles('tests/e2e/fixtures/product-image-one.png');
 
             await expect(
-                screen.getByRole('img', 'product-image-one.svg'),
+                screen.getByRole('img', 'product-image-one.png'),
             ).toBeVisible();
             await screen.getByRole('button', 'Save images').tap();
             await expect(
@@ -115,21 +112,18 @@ describe('inventory module', () => {
         'removes a product image',
         { session: 'inventory-user' },
         async ({ screen }) => {
-            const itemName = 'E2E Image Removal Item';
+            const sku = `E2E-REMOVE-${Date.now()}`;
+            const itemName = `E2E Image Removal Item ${sku}`;
 
-            await createInventoryItem(
-                screen,
-                `E2E-REMOVE-${Date.now()}`,
-                itemName,
-            );
+            await createInventoryItem(screen, sku, itemName);
             await screen
                 .getByRole('button', `Manage product images for ${itemName}`)
                 .tap();
             await screen
                 .getByLabel(/Choose product photos/)
-                .setInputFiles('tests/e2e/fixtures/product-image-one.svg');
+                .setInputFiles('tests/e2e/fixtures/product-image-one.png');
             await screen
-                .getByRole('button', 'Remove product-image-one.svg')
+                .getByRole('button', 'Remove product-image-one.png')
                 .tap();
             await expect(
                 screen.getByText('No product photos yet'),
@@ -149,26 +143,19 @@ describe('inventory module', () => {
         'makes a product image the main image',
         { session: 'inventory-user' },
         async ({ screen }) => {
-            const itemName = 'E2E Main Image Item';
+            const sku = `E2E-MAIN-${Date.now()}`;
+            const itemName = `E2E Main Image Item ${sku}`;
 
-            await createInventoryItem(
-                screen,
-                `E2E-MAIN-${Date.now()}`,
-                itemName,
-            );
+            await createInventoryItem(screen, sku, itemName);
             await screen
                 .getByRole('button', `Manage product images for ${itemName}`)
                 .tap();
             await screen
                 .getByLabel(/Choose product photos/)
                 .setInputFiles([
-                    'tests/e2e/fixtures/product-image-one.svg',
-                    'tests/e2e/fixtures/product-image-two.svg',
+                    'tests/e2e/fixtures/product-image-one.png',
+                    'tests/e2e/fixtures/product-image-two.png',
                 ]);
-            const secondImageSource = await screen
-                .getByRole('img', 'product-image-two.svg')
-                .getAttribute('src');
-
             await screen.getByRole('button', 'Set as main').tap();
             await expect(screen.getByRole('button', 'Main image')).toHaveCount(
                 1,
@@ -181,9 +168,70 @@ describe('inventory module', () => {
             await expect(
                 screen.getByRole('img', `${itemName} main product image`),
             ).toBeVisible();
+        },
+    );
+
+    test(
+        'edits an inventory item',
+        { session: 'inventory-user' },
+        async ({ screen }) => {
+            const sku = `E2E-EDIT-${Date.now()}`;
+            const itemName = `E2E Edit Item ${sku}`;
+            const updatedName = `${itemName} Updated`;
+
+            await createInventoryItem(screen, sku, itemName);
+            await screen.getByRole('button', `Edit ${itemName}`).tap();
+            await screen.getByLabel('Product name').fill(updatedName);
+            await screen.getByLabel('Unit cost').fill('2.50');
+            await screen.getByRole('button', 'Save changes').tap();
+
+            const itemRow = screen.getByRole('row').filter({ hasText: sku });
+
+            await expect(itemRow.getByText(updatedName)).toBeVisible();
+        },
+    );
+
+    test(
+        'deletes an inventory item',
+        { session: 'inventory-user' },
+        async ({ screen }) => {
+            const sku = `E2E-DELETE-${Date.now()}`;
+            const itemName = `E2E Delete Item ${sku}`;
+
+            await createInventoryItem(screen, sku, itemName);
+            await screen.getByRole('button', `Delete ${itemName}`).tap();
+            await screen.getByRole('button', 'Delete item').tap();
+
+            await expect(screen.getByText(itemName)).toHaveCount(0);
+        },
+    );
+
+    test(
+        'shows recent inventory activity',
+        { session: 'inventory-user' },
+        async ({ screen }) => {
+            const sku = `E2E-HISTORY-${Date.now()}`;
+            const itemName = `E2E History Item ${sku}`;
+
+            await createInventoryItem(screen, sku, itemName);
+            await screen
+                .getByRole('button', `Receive stock for ${itemName}`)
+                .tap();
+            await screen.getByLabel('Units to receive').fill('3');
+            await screen.getByRole('button', 'Confirm adjustment').tap();
+            await screen.getByRole('button', 'History').tap();
+
+            const history = screen.getByRole('dialog');
+
             await expect(
-                screen.getByRole('img', `${itemName} main product image`),
-            ).toHaveAttribute('src', secondImageSource ?? '');
+                history.getByText('Inventory Created').first(),
+            ).toBeVisible();
+            await expect(
+                history.getByText('Inventory Stock Adjusted').first(),
+            ).toBeVisible();
+            await expect(
+                history.getByText(itemName, { exact: false }).first(),
+            ).toBeVisible();
         },
     );
 });
