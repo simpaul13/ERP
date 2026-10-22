@@ -1,7 +1,6 @@
 <?php
 
 use App\Http\Controllers\DashboardController;
-use App\Http\Controllers\Inventories\InventoryActivityController;
 use App\Http\Controllers\Inventories\InventoryController;
 use App\Http\Controllers\Teams\TeamInvitationController;
 use App\Http\Middleware\EnsureTeamMembership;
@@ -15,8 +14,10 @@ Route::prefix('{current_team}')
         Route::get('dashboard', DashboardController::class)->name('dashboard');
         Route::get('inventories', [InventoryController::class, 'index'])->name('inventories.index');
         Route::post('inventories', [InventoryController::class, 'store'])->name('inventories.store');
+        Route::patch('inventories/{inventoryItem}', [InventoryController::class, 'update'])->name('inventories.update');
+        Route::delete('inventories/{inventoryItem}', [InventoryController::class, 'destroy'])->name('inventories.destroy');
+        Route::post('inventories/{inventoryItem}/stock', [InventoryController::class, 'stock'])->name('inventories.stock');
         Route::post('inventories/{inventoryItem}/images', [InventoryController::class, 'updateImages'])->name('inventories.images.update');
-        Route::post('inventories/activity', InventoryActivityController::class)->name('inventories.activity');
     });
 
 Route::middleware(['auth'])->group(function () {
