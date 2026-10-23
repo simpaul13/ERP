@@ -2,7 +2,9 @@
 
 namespace App\Http\Controllers;
 
+use App\Enums\StockMovementType;
 use App\Models\InventoryItem;
+use App\Models\StockMovement;
 use App\Models\TeamInvitation;
 use App\Models\User;
 use Illuminate\Database\Eloquent\Builder;
@@ -141,18 +143,19 @@ class DashboardController extends Controller
     {
         $today = now()->startOfDay();
 
-        $counts = $this->inventoryActivities($teamId)
-            ->where('description', 'Inventory Stock Adjusted')
+        $counts = StockMovement::query()
+            ->where('team_id', $teamId)
+            ->where('type', '!=', StockMovementType::Opening->value)
             ->where('created_at', '>=', $today->copy()->subDays(6))
-            ->get(['properties', 'created_at'])
-            ->groupBy(fn (Activity $activity): string => $activity->created_at->toDateString())
-            ->map(fn ($dayActivities): array => [
-                'received' => $dayActivities
-                    ->reject(fn (Activity $activity): bool => $this->isDispatched($activity))
-                    ->sum(fn (Activity $activity): int => $this->adjustmentAmount($activity)),
-                'dispatched' => $dayActivities
-                    ->filter(fn (Activity $activity): bool => $this->isDispatched($activity))
-                    ->sum(fn (Activity $activity): int => $this->adjustmentAmount($activity)),
+            ->get(['quantity', 'created_at'])
+            ->groupBy(fn (StockMovement $movement): string => $movement->created_at->toDateString())
+            ->map(fn ($dayMovements): array => [
+                'received' => (int) $dayMovements
+                    ->where('quantity', '>', 0)
+                    ->sum('quantity'),
+                'dispatched' => abs((int) $dayMovements
+                    ->where('quantity', '<', 0)
+                    ->sum('quantity')),
             ]);
 
         return collect(range(6, 0))
@@ -167,28 +170,6 @@ class DashboardController extends Controller
                 ];
             })
             ->all();
-    }
-
-    /**
-     * Determine whether a stock adjustment removed units from inventory.
-     */
-    private function isDispatched(Activity $activity): bool
-    {
-        $direction = strtolower((string) $activity->getProperty('direction', ''));
-
-        if (in_array($direction, ['out', 'remove', 'removed', 'dispatch', 'dispatched', 'decrease', 'decreased', 'subtract', 'subtracted'], true)) {
-            return true;
-        }
-
-        return (int) $activity->getProperty('amount', 0) < 0;
-    }
-
-    /**
-     * Get the absolute number of units moved by a stock adjustment.
-     */
-    private function adjustmentAmount(Activity $activity): int
-    {
-        return abs((int) $activity->getProperty('amount', 0));
     }
 
     /**

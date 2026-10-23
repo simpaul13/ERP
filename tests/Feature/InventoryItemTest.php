@@ -13,6 +13,7 @@ test('team members can create inventory items that are saved with their photos',
     Storage::fake('public');
     $user = User::factory()->create();
     $team = $user->personalTeam();
+    $warehouse = $team->defaultWarehouse();
     $imageId = fake()->uuid();
     $indexUrl = route('inventories.index', ['current_team' => $team->slug]);
 
@@ -22,7 +23,7 @@ test('team members can create inventory items that are saved with their photos',
             'name' => 'Shipping carton',
             'sku' => 'bx-2048',
             'category' => 'Packaging',
-            'location' => 'North warehouse',
+            'warehouse_id' => $warehouse->id,
             'quantity' => 25,
             'reorder_point' => 5,
             'unit_cost' => '2.50',
@@ -43,6 +44,19 @@ test('team members can create inventory items that are saved with their photos',
         ->and($item->images)->toHaveCount(1)
         ->and($item->images[0]['id'])->toBe($imageId)
         ->and(Storage::disk('public')->allFiles('inventory/'.$team->id))->toHaveCount(1);
+
+    $this->assertDatabaseHas('stock_levels', [
+        'inventory_item_id' => $item->id,
+        'warehouse_id' => $warehouse->id,
+        'quantity' => 25,
+    ]);
+    $this->assertDatabaseHas('stock_movements', [
+        'inventory_item_id' => $item->id,
+        'type' => 'opening',
+        'quantity' => 25,
+        'quantity_before' => 0,
+        'quantity_after' => 25,
+    ]);
 });
 
 test('inventory sku must be unique within a team', function () {
@@ -63,6 +77,7 @@ test('inventory sku must be unique within a team', function () {
             [
                 'name' => 'Duplicate carton',
                 'sku' => 'BX-2048',
+                'warehouse_id' => $team->defaultWarehouse()->id,
                 'quantity' => 0,
                 'reorder_point' => 0,
                 'unit_cost' => 0,
@@ -149,7 +164,6 @@ test('inventory items can be updated and the changed fields are logged', functio
         'sku' => 'BX-2048',
         'name' => 'Shipping carton',
         'category' => 'Packaging',
-        'location' => 'North warehouse',
         'quantity' => 25,
         'reorder_point' => 5,
         'unit_cost' => 2.50,
@@ -165,7 +179,6 @@ test('inventory items can be updated and the changed fields are logged', functio
             'name' => '  Insulated carton  ',
             'sku' => ' bx-4096 ',
             'category' => 'Packaging',
-            'location' => 'South warehouse',
             'quantity' => 999,
             'reorder_point' => 8,
             'unit_cost' => '3.25',
@@ -177,7 +190,6 @@ test('inventory items can be updated and the changed fields are logged', functio
 
     expect($item->name)->toBe('Insulated carton')
         ->and($item->sku)->toBe('BX-4096')
-        ->and($item->location)->toBe('South warehouse')
         ->and($item->reorder_point)->toBe(8)
         ->and($item->quantity)->toBe(25);
 
@@ -239,7 +251,7 @@ test('deleting an inventory item removes it and its stored images', function () 
     $item = $team->inventoryItems()->create([
         'sku' => 'BX-2048',
         'name' => 'Shipping carton',
-        'quantity' => 1,
+        'quantity' => 0,
         'reorder_point' => 1,
         'unit_cost' => 1,
         'images' => [[
@@ -275,13 +287,13 @@ test('deleting an inventory item removes it and its stored images', function () 
 test('receiving stock persists the quantity and logs before and after', function () {
     $user = User::factory()->create();
     $team = $user->personalTeam();
-    $item = $team->inventoryItems()->create([
+    $warehouse = $team->defaultWarehouse();
+    $item = createInventoryItem($team, [
         'sku' => 'BX-2048',
         'name' => 'Shipping carton',
-        'quantity' => 5,
         'reorder_point' => 2,
         'unit_cost' => 1,
-    ]);
+    ], 5);
     $indexUrl = route('inventories.index', ['current_team' => $team->slug]);
 
     $response = $this->actingAs($user)->from($indexUrl)->post(
@@ -291,7 +303,9 @@ test('receiving stock persists the quantity and logs before and after', function
         ]),
         [
             'direction' => 'receive',
+            'warehouse_id' => $warehouse->id,
             'amount' => 7,
+            'reference' => 'PO-1001',
             'reason' => 'Delivery',
         ],
     );
@@ -299,12 +313,21 @@ test('receiving stock persists the quantity and logs before and after', function
     $response->assertRedirect($indexUrl);
     expect($item->refresh()->quantity)->toBe(12);
 
+    $this->assertDatabaseHas('stock_movements', [
+        'inventory_item_id' => $item->id,
+        'type' => 'receipt',
+        'quantity' => 7,
+        'quantity_before' => 5,
+        'quantity_after' => 12,
+        'reference' => 'PO-1001',
+    ]);
+
     $activity = Activity::query()
-        ->where('description', 'Inventory Stock Adjusted')
+        ->where('description', 'Inventory Stock Received')
         ->firstOrFail();
 
     expect($activity->getProperty('team_id'))->toBe($team->id)
-        ->and($activity->getProperty('direction'))->toBe('receive')
+        ->and($activity->getProperty('direction'))->toBe('in')
         ->and($activity->getProperty('amount'))->toBe(7)
         ->and($activity->getProperty('quantity_before'))->toBe(5)
         ->and($activity->getProperty('quantity_after'))->toBe(12)
@@ -314,15 +337,50 @@ test('receiving stock persists the quantity and logs before and after', function
 test('removing stock never drops the quantity below zero', function () {
     $user = User::factory()->create();
     $team = $user->personalTeam();
-    $item = $team->inventoryItems()->create([
+    $warehouse = $team->defaultWarehouse();
+    $item = createInventoryItem($team, [
         'sku' => 'BX-2048',
         'name' => 'Shipping carton',
-        'quantity' => 3,
         'reorder_point' => 2,
         'unit_cost' => 1,
-    ]);
+    ], 3);
+    $indexUrl = route('inventories.index', ['current_team' => $team->slug]);
 
-    $response = $this->actingAs($user)
+    $this->actingAs($user)
+        ->from($indexUrl)
+        ->post(
+            route('inventories.stock', [
+                'current_team' => $team->slug,
+                'inventoryItem' => $item->id,
+            ]),
+            [
+                'direction' => 'remove',
+                'warehouse_id' => $warehouse->id,
+                'amount' => 10,
+                'reason' => 'Damaged units',
+            ],
+        )
+        ->assertSessionHasErrors('amount');
+
+    expect($item->refresh()->quantity)->toBe(3);
+    $this->assertDatabaseMissing('stock_movements', [
+        'inventory_item_id' => $item->id,
+        'type' => 'adjustment',
+    ]);
+});
+
+test('removing stock requires a reason', function () {
+    $user = User::factory()->create();
+    $team = $user->personalTeam();
+    $warehouse = $team->defaultWarehouse();
+    $item = createInventoryItem($team, [
+        'sku' => 'BX-2048',
+        'name' => 'Shipping carton',
+        'reorder_point' => 2,
+        'unit_cost' => 1,
+    ], 3);
+
+    $this->actingAs($user)
         ->from(route('inventories.index', ['current_team' => $team->slug]))
         ->post(
             route('inventories.stock', [
@@ -331,19 +389,13 @@ test('removing stock never drops the quantity below zero', function () {
             ]),
             [
                 'direction' => 'remove',
-                'amount' => 10,
+                'warehouse_id' => $warehouse->id,
+                'amount' => 1,
             ],
-        );
+        )
+        ->assertSessionHasErrors('reason');
 
-    $response->assertRedirect();
-    expect($item->refresh()->quantity)->toBe(0);
-
-    $activity = Activity::query()
-        ->where('description', 'Inventory Stock Adjusted')
-        ->firstOrFail();
-
-    expect($activity->getProperty('quantity_before'))->toBe(3)
-        ->and($activity->getProperty('quantity_after'))->toBe(0);
+    expect($item->refresh()->quantity)->toBe(3);
 });
 
 test('members cannot perform inventory mutations', function () {
@@ -485,33 +537,31 @@ test('inventory index paginates items and reports team summary values', function
 test('inventory index supports server side search and status filters', function () {
     $user = User::factory()->create();
     $team = $user->personalTeam();
-    $team->inventoryItems()->create([
+    $warehouse = $team->defaultWarehouse();
+    $shelfA = $warehouse->locations()->create(['code' => 'SHELF-A', 'name' => 'Shelf A']);
+    $shelfB = $warehouse->locations()->create(['code' => 'SHELF-B', 'name' => 'Shelf B']);
+
+    createInventoryItem($team, [
         'sku' => 'AA-1',
         'name' => 'Widget Alpha',
         'category' => 'Tools',
-        'location' => 'Shelf A',
-        'quantity' => 10,
         'reorder_point' => 2,
         'unit_cost' => 1,
-    ]);
-    $team->inventoryItems()->create([
+    ], 10, $warehouse, $shelfA);
+    createInventoryItem($team, [
         'sku' => 'BB-2',
         'name' => 'Gadget Beta',
         'category' => 'Packaging',
-        'location' => 'Shelf B',
-        'quantity' => 1,
         'reorder_point' => 5,
         'unit_cost' => 1,
-    ]);
-    $team->inventoryItems()->create([
+    ], 1, $warehouse, $shelfB);
+    createInventoryItem($team, [
         'sku' => 'CC-3',
         'name' => 'Doohickey',
         'category' => 'Tools',
-        'location' => 'Shelf C',
-        'quantity' => 0,
         'reorder_point' => 3,
         'unit_cost' => 1,
-    ]);
+    ], 0, $warehouse);
 
     $indexUrl = route('inventories.index', ['current_team' => $team->slug]);
 
@@ -564,6 +614,7 @@ test('inventory index exposes team activities and management permissions', funct
         [
             'name' => 'Shipping carton',
             'sku' => 'BX-2048',
+            'warehouse_id' => $team->defaultWarehouse()->id,
             'quantity' => 2,
             'reorder_point' => 1,
             'unit_cost' => 1,

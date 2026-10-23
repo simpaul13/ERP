@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { Link, usePage } from '@inertiajs/vue3';
-import { Boxes, LayoutGrid } from '@lucide/vue';
+import { Boxes, LayoutGrid, Warehouse } from '@lucide/vue';
 import { computed } from 'vue';
 import AppLogo from '@/components/AppLogo.vue';
 import NavMain from '@/components/NavMain.vue';
@@ -36,6 +36,13 @@ const mainNavItems = computed<NavItem[]>(() => [
             ? `/${page.props.currentTeam.slug}/inventories`
             : '/inventories',
         icon: Boxes,
+    },
+    {
+        title: 'Warehouses',
+        href: page.props.currentTeam
+            ? `/${page.props.currentTeam.slug}/warehouses`
+            : '/warehouses',
+        icon: Warehouse,
     },
 ]);
 </script>

@@ -3,7 +3,9 @@
 namespace App\Providers;
 
 use App\Models\InventoryItem;
+use App\Models\Warehouse;
 use App\Policies\InventoryPolicy;
+use App\Policies\WarehousePolicy;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\Date;
 use Illuminate\Support\Facades\DB;
@@ -27,6 +29,7 @@ class AppServiceProvider extends ServiceProvider
     public function boot(): void
     {
         Gate::policy(InventoryItem::class, InventoryPolicy::class);
+        Gate::policy(Warehouse::class, WarehousePolicy::class);
 
         $this->configureDefaults();
     }

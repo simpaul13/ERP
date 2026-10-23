@@ -2,6 +2,7 @@
 
 use App\Enums\TeamRole;
 use App\Models\InventoryItem;
+use App\Models\StockMovement;
 use App\Models\Team;
 use App\Models\TeamInvitation;
 use App\Models\User;
@@ -274,41 +275,15 @@ test('dashboard movement counts stock adjustments over the last seven days', fun
     $team = $user->currentTeam;
     $today = now()->startOfDay();
 
-    logDashboardInventoryActivity($team, $user, 'Inventory Stock Adjusted', [
-        'direction' => 'in',
-        'amount' => 5,
-    ], $today->copy()->addHours(9));
-
-    logDashboardInventoryActivity($team, $user, 'Inventory Stock Adjusted', [
-        'direction' => 'out',
-        'amount' => 3,
-    ], $today->copy()->addHours(10));
-
-    logDashboardInventoryActivity($team, $user, 'Inventory Stock Adjusted', [
-        'direction' => 'receive',
-        'amount' => 7,
-    ], $today->copy()->subDays(2)->addHours(9));
-
-    logDashboardInventoryActivity($team, $user, 'Inventory Stock Adjusted', [
-        'direction' => 'remove',
-        'amount' => 2,
-    ], $today->copy()->subDays(6)->addHours(9));
-
-    logDashboardInventoryActivity($team, $user, 'Inventory Stock Adjusted', [
-        'direction' => 'in',
-        'amount' => 100,
-    ], $today->copy()->subDays(7)->addHours(9));
-
-    logDashboardInventoryActivity($team, $user, 'Inventory Update', [
-        'direction' => 'in',
-        'amount' => 50,
-    ], $today->copy()->addHours(9));
+    logDashboardStockMovement($team, 5, $today->copy()->addHours(9));
+    logDashboardStockMovement($team, -3, $today->copy()->addHours(10), 'adjustment');
+    logDashboardStockMovement($team, 7, $today->copy()->subDays(2)->addHours(9));
+    logDashboardStockMovement($team, -2, $today->copy()->subDays(6)->addHours(9), 'adjustment');
+    logDashboardStockMovement($team, 100, $today->copy()->subDays(7)->addHours(9));
+    logDashboardStockMovement($team, 50, $today->copy()->addHours(9), 'opening');
 
     $otherTeam = Team::factory()->create();
-    logDashboardInventoryActivity($otherTeam, $user, 'Inventory Stock Adjusted', [
-        'direction' => 'in',
-        'amount' => 99,
-    ], $today->copy()->addHours(9));
+    logDashboardStockMovement($otherTeam, 99, $today->copy()->addHours(9));
 
     $response = $this
         ->actingAs($user)
@@ -388,4 +363,32 @@ function logDashboardInventoryActivity(Team $team, ?User $user, string $descript
     }
 
     return $activity;
+}
+
+function logDashboardStockMovement(
+    Team $team,
+    int $quantity,
+    CarbonInterface $createdAt,
+    string $type = 'receipt',
+): void {
+    $warehouse = $team->defaultWarehouse();
+
+    StockMovement::query()->insert([
+        'team_id' => $team->id,
+        'inventory_item_id' => null,
+        'warehouse_id' => $warehouse->id,
+        'warehouse_location_id' => $warehouse->defaultLocation()->id,
+        'item_name' => 'Dashboard item',
+        'sku' => 'DASH-001',
+        'type' => $type,
+        'quantity' => $quantity,
+        'quantity_before' => 0,
+        'quantity_after' => max(0, $quantity),
+        'unit_cost' => 0,
+        'reference' => null,
+        'reason' => null,
+        'user_id' => null,
+        'created_at' => $createdAt,
+        'updated_at' => $createdAt,
+    ]);
 }

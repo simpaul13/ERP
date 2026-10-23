@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Head, router, usePage } from '@inertiajs/vue3';
+import { Head, Link, router, usePage } from '@inertiajs/vue3';
 import {
     ArrowDownToLine,
     ArrowUpFromLine,
@@ -18,6 +18,7 @@ import {
     Star,
     Trash2,
     Upload,
+    Warehouse,
 } from '@lucide/vue';
 import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import { Button } from '@/components/ui/button';
@@ -40,15 +41,42 @@ type ProductImage = {
     file?: File;
 };
 
+type WarehouseBin = {
+    id: number;
+    code: string;
+    name: string;
+    isDefault: boolean;
+    totalUnits: number;
+};
+
+type WarehouseOption = {
+    id: number;
+    code: string;
+    name: string;
+    isDefault: boolean;
+    totalUnits: number;
+    locations: WarehouseBin[];
+};
+
+type ItemStock = {
+    warehouseId: number;
+    warehouseName: string | null;
+    warehouseCode: string | null;
+    locationId: number;
+    locationName: string | null;
+    locationCode: string | null;
+    quantity: number;
+};
+
 type InventoryItem = {
     id: number;
     sku: string;
     name: string;
     category: string;
-    location: string;
     quantity: number;
     reorderPoint: number;
     unitCost: number;
+    stock: ItemStock[];
     images: ProductImage[];
     mainImageId: string | null;
 };
@@ -58,6 +86,25 @@ type InventoryStatus = 'all' | 'low' | 'out';
 type InventoryFilters = {
     search: string;
     status: InventoryStatus;
+    warehouse: number;
+};
+
+type StockMovementRecord = {
+    id: number;
+    type: string;
+    typeLabel: string;
+    itemName: string;
+    sku: string;
+    warehouseName: string | null;
+    locationName: string | null;
+    quantity: number;
+    quantityBefore: number;
+    quantityAfter: number;
+    unitCost: number;
+    reference: string | null;
+    reason: string | null;
+    userName: string;
+    createdAt: string | null;
 };
 
 type InventorySummary = {
@@ -92,7 +139,7 @@ type PaginatedInventoryItems = {
 const inventoryColumns = [
     { key: 'product', label: 'Product' },
     { key: 'category', label: 'Category' },
-    { key: 'location', label: 'Location' },
+    { key: 'warehouses', label: 'Stocked in' },
     { key: 'available', label: 'Available', align: 'right' as const },
     { key: 'status', label: 'Status' },
     { key: 'unitCost', label: 'Unit cost', align: 'right' as const },
@@ -116,9 +163,38 @@ const activities = computed<InventoryActivity[]>(() => {
 
 const canManage = computed<boolean>(() => Boolean(page.props.canManage));
 
+const warehouses = computed<WarehouseOption[]>(
+    () => (page.props.warehouses as WarehouseOption[] | undefined) ?? [],
+);
+
+const defaultWarehouseId = computed<number | null>(
+    () => (page.props.defaultWarehouseId as number | null | undefined) ?? null,
+);
+
+const warehousesUrl = computed<string>(() => {
+    const slug = currentTeamSlug();
+
+    return slug ? `/${slug}/warehouses` : '/warehouses';
+});
+
+function defaultBinId(warehouseId: number | null): number | null {
+    if (!warehouseId) {
+        return null;
+    }
+
+    const warehouse = warehouses.value.find((entry) => entry.id === warehouseId);
+
+    return (
+        warehouse?.locations.find((location) => location.isDefault)?.id ??
+        warehouse?.locations[0]?.id ??
+        null
+    );
+}
+
 const pageFilters = page.props.filters as InventoryFilters | undefined;
 const query = ref(pageFilters?.search ?? '');
 const selectedStatus = ref<InventoryStatus>(pageFilters?.status ?? 'all');
+const selectedWarehouse = ref<number>(pageFilters?.warehouse ?? 0);
 
 const savingItem = ref(false);
 const dialogOpen = ref(false);
@@ -127,6 +203,9 @@ const selectedItem = ref<InventoryItem | null>(null);
 const adjustmentAmount = ref(0);
 const adjustmentDirection = ref<'receive' | 'remove'>('receive');
 const adjustmentReason = ref('');
+const adjustmentReference = ref('');
+const adjustmentWarehouseId = ref<number | null>(null);
+const adjustmentLocationId = ref<number | null>(null);
 const adjustmentError = ref('');
 const adjusting = ref(false);
 const editOpen = ref(false);
@@ -137,7 +216,6 @@ const editForm = ref({
     name: '',
     sku: '',
     category: '',
-    location: '',
     reorderPoint: 0,
     unitCost: 0,
 });
@@ -154,15 +232,23 @@ const photoError = ref('');
 const objectUrls = new Set<string>();
 const newItemImages = ref<ProductImage[]>([]);
 const newItemMainImageId = ref<string | null>(null);
+const newItemError = ref('');
 const newItem = ref({
     name: '',
     sku: '',
     category: '',
-    location: '',
+    warehouseId: defaultWarehouseId.value as number | null,
+    warehouseLocationId: defaultBinId(defaultWarehouseId.value),
     quantity: 0,
     reorderPoint: 0,
     unitCost: 0,
 });
+
+const movementOpen = ref(false);
+const movementItem = ref<InventoryItem | null>(null);
+const movements = ref<StockMovementRecord[]>([]);
+const movementLoading = ref(false);
+const movementError = ref('');
 
 let searchTimeout: ReturnType<typeof setTimeout> | undefined;
 
@@ -190,6 +276,51 @@ watch(selectedStatus, () => {
     applyFilters();
 });
 
+watch(selectedWarehouse, () => {
+    applyFilters();
+});
+
+watch(
+    () => newItem.value.warehouseId,
+    (warehouseId) => {
+        newItem.value.warehouseLocationId = defaultBinId(warehouseId);
+    },
+);
+
+watch(adjustmentWarehouseId, (warehouseId) => {
+    const belongsToWarehouse = adjustmentLocations.value.some(
+        (location) => location.id === adjustmentLocationId.value,
+    );
+
+    if (!belongsToWarehouse) {
+        adjustmentLocationId.value = defaultBinId(warehouseId);
+    }
+});
+
+const adjustmentWarehouse = computed<WarehouseOption | undefined>(() =>
+    warehouses.value.find((warehouse) => warehouse.id === adjustmentWarehouseId.value),
+);
+
+const adjustmentLocations = computed<WarehouseBin[]>(
+    () => adjustmentWarehouse.value?.locations ?? [],
+);
+
+const adjustmentAvailable = computed<number>(() => {
+    const item = selectedItem.value;
+
+    if (!item) {
+        return 0;
+    }
+
+    return item.stock
+        .filter(
+            (entry) =>
+                entry.warehouseId === adjustmentWarehouseId.value &&
+                entry.locationId === adjustmentLocationId.value,
+        )
+        .reduce((total, entry) => total + entry.quantity, 0);
+});
+
 const activityDateFormatter = new Intl.DateTimeFormat(undefined, {
     dateStyle: 'medium',
     timeStyle: 'short',
@@ -215,6 +346,7 @@ function applyFilters(): void {
         {
             search: query.value.trim(),
             status: selectedStatus.value,
+            warehouse: selectedWarehouse.value || undefined,
         },
         {
             preserveState: true,
@@ -276,6 +408,25 @@ function stockStatus(item: InventoryItem): string {
     return item.quantity <= item.reorderPoint ? 'Low stock' : 'In stock';
 }
 
+function stockedIn(item: InventoryItem): string {
+    const totals = new Map<string, number>();
+
+    item.stock
+        .filter((entry) => entry.quantity > 0)
+        .forEach((entry) => {
+            const name = entry.warehouseName ?? 'Warehouse';
+            totals.set(name, (totals.get(name) ?? 0) + entry.quantity);
+        });
+
+    if (!totals.size) {
+        return '—';
+    }
+
+    return Array.from(totals.entries())
+        .map(([name, quantity]) => `${name} · ${quantity}`)
+        .join(' · ');
+}
+
 function mainImage(item: InventoryItem): ProductImage | undefined {
     return item.images.find((image) => image.id === item.mainImageId);
 }
@@ -292,15 +443,26 @@ function addItem(): void {
         return;
     }
 
+    if (!newItem.value.warehouseId) {
+        newItemError.value =
+            'Choose a warehouse for the opening stock. Add one under Warehouses if none exist.';
+
+        return;
+    }
+
+    newItemError.value = '';
     photoError.value = '';
     savingItem.value = true;
 
     router.post(
         `/${slug}/inventories`,
         {
-            ...newItem.value,
             name: newItem.value.name.trim(),
             sku: newItem.value.sku.trim().toUpperCase(),
+            category: newItem.value.category.trim(),
+            warehouse_id: newItem.value.warehouseId,
+            warehouse_location_id: newItem.value.warehouseLocationId,
+            quantity: newItem.value.quantity,
             reorder_point: newItem.value.reorderPoint,
             unit_cost: newItem.value.unitCost,
             image_ids: newItemImages.value.map((image) => image.id),
@@ -317,7 +479,8 @@ function addItem(): void {
                     name: '',
                     sku: '',
                     category: '',
-                    location: '',
+                    warehouseId: defaultWarehouseId.value,
+                    warehouseLocationId: defaultBinId(defaultWarehouseId.value),
                     quantity: 0,
                     reorderPoint: 0,
                     unitCost: 0,
@@ -325,7 +488,7 @@ function addItem(): void {
                 dialogOpen.value = false;
             },
             onError: (errors) => {
-                photoError.value = firstError(errors);
+                newItemError.value = firstError(errors);
             },
             onFinish: () => {
                 savingItem.value = false;
@@ -464,10 +627,21 @@ function openAdjustment(
     item: InventoryItem,
     direction: 'receive' | 'remove',
 ): void {
+    const located = item.stock.find((entry) => entry.quantity > 0);
+    const warehouseId =
+        located?.warehouseId ??
+        defaultWarehouseId.value ??
+        warehouses.value[0]?.id ??
+        null;
+
     selectedItem.value = item;
     adjustmentDirection.value = direction;
     adjustmentAmount.value = 0;
     adjustmentReason.value = '';
+    adjustmentReference.value = '';
+    adjustmentWarehouseId.value = warehouseId;
+    adjustmentLocationId.value =
+        located?.locationId ?? defaultBinId(warehouseId);
     adjustmentError.value = '';
     adjustmentOpen.value = true;
 }
@@ -488,6 +662,21 @@ function adjustStock(): void {
         return;
     }
 
+    if (!adjustmentWarehouseId.value) {
+        adjustmentError.value = 'Choose a warehouse.';
+
+        return;
+    }
+
+    if (
+        adjustmentDirection.value === 'remove' &&
+        !adjustmentReason.value.trim()
+    ) {
+        adjustmentError.value = 'A reason is required when removing stock.';
+
+        return;
+    }
+
     adjustmentError.value = '';
     adjusting.value = true;
 
@@ -495,8 +684,11 @@ function adjustStock(): void {
         `/${slug}/inventories/${item.id}/stock`,
         {
             direction: adjustmentDirection.value,
+            warehouse_id: adjustmentWarehouseId.value,
+            warehouse_location_id: adjustmentLocationId.value,
             amount,
             reason: adjustmentReason.value.trim(),
+            reference: adjustmentReference.value.trim(),
         },
         {
             preserveScroll: true,
@@ -519,7 +711,6 @@ function openEdit(item: InventoryItem): void {
         name: item.name,
         sku: item.sku,
         category: item.category,
-        location: item.location,
         reorderPoint: item.reorderPoint,
         unitCost: item.unitCost,
     };
@@ -550,7 +741,6 @@ function saveEdit(): void {
             name: editForm.value.name.trim(),
             sku: editForm.value.sku.trim().toUpperCase(),
             category: editForm.value.category.trim(),
-            location: editForm.value.location.trim(),
             reorder_point: editForm.value.reorderPoint,
             unit_cost: editForm.value.unitCost,
         },
@@ -605,7 +795,7 @@ function exportInventory(): void {
         'SKU',
         'Product',
         'Category',
-        'Location',
+        'Warehouses',
         'Quantity',
         'Reorder point',
         'Unit cost',
@@ -614,7 +804,13 @@ function exportInventory(): void {
         item.sku,
         item.name,
         item.category,
-        item.location,
+        item.stock
+            .filter((entry) => entry.quantity > 0)
+            .map(
+                (entry) =>
+                    `${entry.warehouseName ?? ''}/${entry.locationName ?? ''}: ${entry.quantity}`,
+            )
+            .join(' | '),
         item.quantity,
         item.reorderPoint,
         item.unitCost.toFixed(2),
@@ -635,6 +831,88 @@ function exportInventory(): void {
     link.download = 'inventory.csv';
     link.click();
     URL.revokeObjectURL(url);
+}
+
+function openCreateItem(): void {
+    newItemError.value = '';
+
+    if (!warehouses.value.length) {
+        const slug = currentTeamSlug();
+
+        if (slug) {
+            router.visit(`/${slug}/warehouses`);
+        }
+
+        return;
+    }
+
+    if (
+        !warehouses.value.some(
+            (warehouse) => warehouse.id === newItem.value.warehouseId,
+        )
+    ) {
+        newItem.value.warehouseId =
+            defaultWarehouseId.value ?? warehouses.value[0]?.id ?? null;
+        newItem.value.warehouseLocationId = defaultBinId(
+            newItem.value.warehouseId,
+        );
+    }
+
+    dialogOpen.value = true;
+}
+
+async function openMovements(item: InventoryItem): Promise<void> {
+    const slug = currentTeamSlug();
+
+    movementItem.value = item;
+    movements.value = [];
+    movementError.value = '';
+    movementOpen.value = true;
+
+    if (!slug) {
+        movementError.value = 'Unable to load stock history.';
+        return;
+    }
+
+    movementLoading.value = true;
+
+    try {
+        const response = await fetch(
+            `/${slug}/inventories/${item.id}/movements`,
+            {
+                headers: { Accept: 'application/json' },
+                credentials: 'same-origin',
+            },
+        );
+
+        if (!response.ok) {
+            throw new Error('Unable to load stock history.');
+        }
+
+        const payload = (await response.json()) as {
+            data?: StockMovementRecord[];
+        };
+        movements.value = payload.data ?? [];
+    } catch (error) {
+        movementError.value =
+            error instanceof Error
+                ? error.message
+                : 'Unable to load stock history.';
+    } finally {
+        movementLoading.value = false;
+    }
+}
+
+function formatMovementDate(value: string | null): string {
+    if (!value) {
+        return '—';
+    }
+
+    const date = new Date(value);
+
+    return Number.isNaN(date.getTime())
+        ? value
+        : activityDateFormatter.format(date);
 }
 
 defineOptions({
@@ -668,13 +946,18 @@ defineOptions({
                 </p>
             </div>
             <div class="flex flex-wrap gap-2">
+                <Button as-child variant="outline" size="sm">
+                    <Link :href="warehousesUrl">
+                        <Warehouse class="size-4" /> Warehouses
+                    </Link>
+                </Button>
                 <Button variant="outline" size="sm" @click="historyOpen = true">
                     <History class="size-4" /> History
                 </Button>
                 <Button variant="outline" size="sm" @click="exportInventory">
                     <Download class="size-4" /> Export
                 </Button>
-                <Button v-if="canManage" size="sm" @click="dialogOpen = true">
+                <Button v-if="canManage" size="sm" @click="openCreateItem">
                     <Plus class="size-4" /> Add item
                 </Button>
             </div>
@@ -724,12 +1007,29 @@ defineOptions({
                     <Input
                         v-model="query"
                         aria-label="Search inventory"
-                        placeholder="Search name, SKU, location…"
+                        placeholder="Search name, SKU, warehouse…"
                         class="pl-9"
                     />
                 </div>
-                <div class="flex items-center gap-2">
+                <div class="flex flex-wrap items-center gap-2">
                     <SlidersHorizontal class="size-4 text-muted-foreground" />
+                    <label for="inventory-warehouse" class="sr-only"
+                        >Filter by warehouse</label
+                    >
+                    <select
+                        id="inventory-warehouse"
+                        v-model.number="selectedWarehouse"
+                        class="h-9 rounded-md border bg-background px-3 text-sm focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                        <option :value="0">All warehouses</option>
+                        <option
+                            v-for="warehouse in warehouses"
+                            :key="warehouse.id"
+                            :value="warehouse.id"
+                        >
+                            {{ warehouse.name }}
+                        </option>
+                    </select>
                     <label for="inventory-status" class="sr-only"
                         >Filter by stock status</label
                     >
@@ -792,9 +1092,9 @@ defineOptions({
                         item.category || '—'
                     }}</span>
                 </template>
-                <template #cell-location="{ item }">
+                <template #cell-warehouses="{ item }">
                     <span class="text-muted-foreground">{{
-                        item.location || '—'
+                        stockedIn(item)
                     }}</span>
                 </template>
                 <template #cell-available="{ item }">
@@ -825,57 +1125,65 @@ defineOptions({
                     >
                 </template>
                 <template #cell-actions="{ item }">
-                    <div v-if="canManage" class="flex justify-end gap-1">
+                    <div class="flex items-center justify-end gap-1">
                         <Button
                             variant="ghost"
                             size="icon"
                             class="size-8"
-                            :aria-label="`Manage product images for ${item.name}`"
-                            @click="openPhotoEditor(item)"
+                            :aria-label="`View stock history for ${item.name}`"
+                            @click="openMovements(item)"
                         >
-                            <Image class="size-4" />
+                            <History class="size-4" />
                         </Button>
-                        <Button
-                            variant="ghost"
-                            size="icon"
-                            class="size-8"
-                            :aria-label="`Receive stock for ${item.name}`"
-                            @click="openAdjustment(item, 'receive')"
-                        >
-                            <ArrowDownToLine class="size-4" />
-                        </Button>
-                        <Button
-                            variant="ghost"
-                            size="icon"
-                            class="size-8"
-                            :aria-label="`Remove stock for ${item.name}`"
-                            :disabled="item.quantity === 0"
-                            @click="openAdjustment(item, 'remove')"
-                        >
-                            <ArrowUpFromLine class="size-4" />
-                        </Button>
-                        <Button
-                            variant="ghost"
-                            size="icon"
-                            class="size-8"
-                            :aria-label="`Edit ${item.name}`"
-                            @click="openEdit(item)"
-                        >
-                            <Pencil class="size-4" />
-                        </Button>
-                        <Button
-                            variant="ghost"
-                            size="icon"
-                            class="size-8 text-muted-foreground hover:text-destructive"
-                            :aria-label="`Delete ${item.name}`"
-                            @click="openDelete(item)"
-                        >
-                            <Trash2 class="size-4" />
-                        </Button>
+                        <template v-if="canManage">
+                            <Button
+                                variant="ghost"
+                                size="icon"
+                                class="size-8"
+                                :aria-label="`Manage product images for ${item.name}`"
+                                @click="openPhotoEditor(item)"
+                            >
+                                <Image class="size-4" />
+                            </Button>
+                            <Button
+                                variant="ghost"
+                                size="icon"
+                                class="size-8"
+                                :aria-label="`Receive stock for ${item.name}`"
+                                @click="openAdjustment(item, 'receive')"
+                            >
+                                <ArrowDownToLine class="size-4" />
+                            </Button>
+                            <Button
+                                variant="ghost"
+                                size="icon"
+                                class="size-8"
+                                :aria-label="`Remove stock for ${item.name}`"
+                                :disabled="item.quantity === 0"
+                                @click="openAdjustment(item, 'remove')"
+                            >
+                                <ArrowUpFromLine class="size-4" />
+                            </Button>
+                            <Button
+                                variant="ghost"
+                                size="icon"
+                                class="size-8"
+                                :aria-label="`Edit ${item.name}`"
+                                @click="openEdit(item)"
+                            >
+                                <Pencil class="size-4" />
+                            </Button>
+                            <Button
+                                variant="ghost"
+                                size="icon"
+                                class="size-8 text-muted-foreground hover:text-destructive"
+                                :aria-label="`Delete ${item.name}`"
+                                @click="openDelete(item)"
+                            >
+                                <Trash2 class="size-4" />
+                            </Button>
+                        </template>
                     </div>
-                    <span v-else class="text-xs text-muted-foreground"
-                        >Read only</span
-                    >
                 </template>
                 <template #empty>
                     <Boxes class="mx-auto size-8 text-muted-foreground" />
@@ -952,21 +1260,54 @@ defineOptions({
                             />
                         </div>
                         <div class="grid gap-2">
-                            <Label for="item-location">Location</Label
-                            ><Input
-                                id="item-location"
-                                v-model="newItem.location"
-                                placeholder="North warehouse"
-                            />
+                            <Label for="item-warehouse">Warehouse</Label>
+                            <select
+                                id="item-warehouse"
+                                v-model.number="newItem.warehouseId"
+                                required
+                                class="h-9 rounded-md border bg-background px-3 text-sm focus-visible:ring-2 focus-visible:ring-ring"
+                            >
+                                <option
+                                    v-for="warehouse in warehouses"
+                                    :key="warehouse.id"
+                                    :value="warehouse.id"
+                                >
+                                    {{ warehouse.name }}
+                                </option>
+                            </select>
                         </div>
                         <div class="grid gap-2">
-                            <Label for="item-quantity">Available units</Label
+                            <Label for="item-bin">Bin (optional)</Label>
+                            <select
+                                id="item-bin"
+                                v-model.number="newItem.warehouseLocationId"
+                                class="h-9 rounded-md border bg-background px-3 text-sm focus-visible:ring-2 focus-visible:ring-ring"
+                            >
+                                <option :value="null">Default bin</option>
+                                <option
+                                    v-for="bin in warehouses.find(
+                                        (warehouse) =>
+                                            warehouse.id ===
+                                            newItem.warehouseId,
+                                    )?.locations ?? []"
+                                    :key="bin.id"
+                                    :value="bin.id"
+                                >
+                                    {{ bin.name }} · {{ bin.code }}
+                                </option>
+                            </select>
+                        </div>
+                        <div class="grid gap-2">
+                            <Label for="item-quantity">Opening quantity</Label
                             ><Input
                                 id="item-quantity"
                                 v-model.number="newItem.quantity"
                                 type="number"
                                 min="0"
                             />
+                            <p class="text-xs text-muted-foreground">
+                                Saved as an opening balance movement.
+                            </p>
                         </div>
                         <div class="grid gap-2">
                             <Label for="item-reorder">Reorder point</Label
@@ -1101,6 +1442,13 @@ defineOptions({
                             is selected as the main image automatically.
                         </div>
                     </section>
+                    <p
+                        v-if="newItemError"
+                        class="text-xs text-destructive"
+                        role="alert"
+                    >
+                        {{ newItemError }}
+                    </p>
                     <DialogFooter
                         ><Button type="submit" :disabled="savingItem">
                             {{ savingItem ? 'Saving…' : 'Add item' }}
@@ -1145,13 +1493,6 @@ defineOptions({
                             />
                         </div>
                         <div class="grid gap-2">
-                            <Label for="edit-item-location">Location</Label>
-                            <Input
-                                id="edit-item-location"
-                                v-model="editForm.location"
-                            />
-                        </div>
-                        <div class="grid gap-2">
                             <Label for="edit-item-reorder">Reorder point</Label>
                             <Input
                                 id="edit-item-reorder"
@@ -1171,6 +1512,10 @@ defineOptions({
                             />
                         </div>
                     </div>
+                    <p class="text-xs text-muted-foreground">
+                        Stock locations are changed with Receive or Adjust so
+                        every movement stays on the ledger.
+                    </p>
                     <p
                         v-if="editError"
                         class="text-xs text-destructive"
@@ -1444,33 +1789,90 @@ defineOptions({
                                 : 'Remove stock'
                         }}</DialogTitle>
                         <DialogDescription
-                            >{{ selectedItem?.name }} · Current quantity:
-                            {{ selectedItem?.quantity ?? 0 }}</DialogDescription
+                            >{{ selectedItem?.name }} · Total on hand:
+                            {{ selectedItem?.quantity ?? 0 }}
+                            units</DialogDescription
                         >
                     </DialogHeader>
-                    <div class="grid gap-2">
-                        <Label for="adjustment-amount"
-                            >Units to
-                            {{
-                                adjustmentDirection === 'receive'
-                                    ? 'receive'
-                                    : 'remove'
-                            }}</Label
-                        ><Input
-                            id="adjustment-amount"
-                            v-model.number="adjustmentAmount"
-                            type="number"
-                            min="1"
-                            required
-                        />
-                    </div>
-                    <div class="grid gap-2">
-                        <Label for="adjustment-reason">Reason (optional)</Label>
-                        <Input
-                            id="adjustment-reason"
-                            v-model="adjustmentReason"
-                            placeholder="e.g. Supplier delivery, damaged units"
-                        />
+                    <div class="grid gap-4 sm:grid-cols-2">
+                        <div class="grid gap-2 sm:col-span-2">
+                            <Label for="adjustment-warehouse">Warehouse</Label>
+                            <select
+                                id="adjustment-warehouse"
+                                v-model.number="adjustmentWarehouseId"
+                                required
+                                class="h-9 rounded-md border bg-background px-3 text-sm focus-visible:ring-2 focus-visible:ring-ring"
+                            >
+                                <option
+                                    v-for="warehouse in warehouses"
+                                    :key="warehouse.id"
+                                    :value="warehouse.id"
+                                >
+                                    {{ warehouse.name }}
+                                </option>
+                            </select>
+                        </div>
+                        <div class="grid gap-2 sm:col-span-2">
+                            <Label for="adjustment-bin">Bin</Label>
+                            <select
+                                id="adjustment-bin"
+                                v-model.number="adjustmentLocationId"
+                                class="h-9 rounded-md border bg-background px-3 text-sm focus-visible:ring-2 focus-visible:ring-ring"
+                            >
+                                <option
+                                    v-for="bin in adjustmentLocations"
+                                    :key="bin.id"
+                                    :value="bin.id"
+                                >
+                                    {{ bin.name }} · {{ bin.code }}
+                                </option>
+                            </select>
+                            <p class="text-xs text-muted-foreground">
+                                Available in this bin:
+                                <span class="tabular-nums"
+                                    >{{ adjustmentAvailable }}</span
+                                >
+                                units
+                            </p>
+                        </div>
+                        <div class="grid gap-2">
+                            <Label for="adjustment-amount"
+                                >Units to
+                                {{
+                                    adjustmentDirection === 'receive'
+                                        ? 'receive'
+                                        : 'remove'
+                                }}</Label
+                            ><Input
+                                id="adjustment-amount"
+                                v-model.number="adjustmentAmount"
+                                type="number"
+                                min="1"
+                                required
+                            />
+                        </div>
+                        <div class="grid gap-2">
+                            <Label for="adjustment-reason">
+                                {{
+                                    adjustmentDirection === 'receive'
+                                        ? 'Reference (optional)'
+                                        : 'Reason'
+                                }}
+                            </Label>
+                            <Input
+                                v-if="adjustmentDirection === 'receive'"
+                                id="adjustment-reason"
+                                v-model="adjustmentReference"
+                                placeholder="e.g. PO-1001, supplier"
+                            />
+                            <Input
+                                v-else
+                                id="adjustment-reason"
+                                v-model="adjustmentReason"
+                                required
+                                placeholder="e.g. Damaged, stocktake correction"
+                            />
+                        </div>
                     </div>
                     <p
                         v-if="adjustmentError"
@@ -1494,6 +1896,110 @@ defineOptions({
                         </Button>
                     </DialogFooter>
                 </form>
+            </DialogContent>
+        </Dialog>
+
+        <Dialog v-model:open="movementOpen">
+            <DialogContent
+                class="max-h-[min(90vh,720px)] overflow-y-auto sm:max-w-2xl"
+            >
+                <DialogHeader>
+                    <DialogTitle>Stock movements</DialogTitle>
+                    <DialogDescription>
+                        {{ movementItem?.name }} ·
+                        <span class="font-mono">{{ movementItem?.sku }}</span>
+                        · {{ movementItem?.quantity ?? 0 }} units on hand
+                    </DialogDescription>
+                </DialogHeader>
+
+                <div
+                    v-if="movementLoading"
+                    class="rounded-md border border-dashed px-4 py-8 text-center text-sm text-muted-foreground"
+                >
+                    Loading movement history…
+                </div>
+                <p
+                    v-else-if="movementError"
+                    class="rounded-md border border-dashed border-destructive/40 px-4 py-4 text-sm text-destructive"
+                    role="alert"
+                >
+                    {{ movementError }}
+                </p>
+                <ol v-else-if="movements.length" class="divide-y">
+                    <li
+                        v-for="movement in movements"
+                        :key="movement.id"
+                        class="py-3 first:pt-0 last:pb-0"
+                    >
+                        <div class="flex items-start justify-between gap-3">
+                            <div class="min-w-0">
+                                <p class="flex flex-wrap items-center gap-2 text-sm font-medium">
+                                    {{ movement.typeLabel }}
+                                    <span
+                                        class="tabular-nums"
+                                        :class="
+                                            movement.quantity > 0
+                                                ? 'text-emerald-600 dark:text-emerald-400'
+                                                : 'text-destructive'
+                                        "
+                                    >
+                                        {{ movement.quantity > 0 ? '+' : ''
+                                        }}{{ movement.quantity }}
+                                    </span>
+                                </p>
+                                <p class="mt-1 text-xs text-muted-foreground">
+                                    {{ movement.warehouseName ?? 'Warehouse' }}
+                                    <template v-if="movement.locationName">
+                                        · {{ movement.locationName }}
+                                    </template>
+                                    · {{ movement.quantityBefore }} →
+                                    {{ movement.quantityAfter }}
+                                </p>
+                                <p
+                                    v-if="movement.reason"
+                                    class="mt-1 text-xs text-muted-foreground"
+                                >
+                                    {{ movement.reason }}
+                                </p>
+                                <p
+                                    v-if="movement.reference"
+                                    class="mt-1 font-mono text-xs text-muted-foreground"
+                                >
+                                    Ref {{ movement.reference }}
+                                </p>
+                                <p class="mt-1 text-xs text-muted-foreground">
+                                    {{ movement.userName }}
+                                </p>
+                            </div>
+                            <time
+                                class="shrink-0 text-xs text-muted-foreground"
+                                :datetime="movement.createdAt ?? undefined"
+                                >{{
+                                    formatMovementDate(movement.createdAt)
+                                }}</time
+                            >
+                        </div>
+                    </li>
+                </ol>
+                <div
+                    v-else
+                    class="rounded-md border border-dashed px-4 py-8 text-center"
+                >
+                    <History class="mx-auto size-6 text-muted-foreground" />
+                    <p class="mt-2 text-sm font-medium">No stock movements</p>
+                    <p class="mt-1 text-xs text-muted-foreground">
+                        Opening balances, receipts, and adjustments will appear
+                        here.
+                    </p>
+                </div>
+                <DialogFooter>
+                    <Button
+                        type="button"
+                        variant="outline"
+                        @click="movementOpen = false"
+                        >Close</Button
+                    >
+                </DialogFooter>
             </DialogContent>
         </Dialog>
     </main>

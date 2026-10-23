@@ -26,6 +26,8 @@ use Illuminate\Support\Carbon;
  * @property-read Collection<int, Membership> $memberships
  * @property-read Collection<int, User> $members
  * @property-read Collection<int, InventoryItem> $inventoryItems
+ * @property-read Collection<int, Warehouse> $warehouses
+ * @property-read Collection<int, StockMovement> $stockMovements
  */
 #[Fillable(['name', 'slug', 'is_personal'])]
 class Team extends Model
@@ -50,6 +52,14 @@ class Team extends Model
             if ($team->isDirty('name')) {
                 $team->slug = static::generateUniqueTeamSlug($team->name, $team->id);
             }
+        });
+
+        static::created(function (Team $team) {
+            $team->warehouses()->create([
+                'code' => 'MAIN',
+                'name' => 'Main warehouse',
+                'is_default' => true,
+            ]);
         });
     }
 
@@ -104,6 +114,35 @@ class Team extends Model
     public function inventoryItems(): HasMany
     {
         return $this->hasMany(InventoryItem::class);
+    }
+
+    /**
+     * Get all warehouses for this team.
+     *
+     * @return HasMany<Warehouse, $this>
+     */
+    public function warehouses(): HasMany
+    {
+        return $this->hasMany(Warehouse::class);
+    }
+
+    /**
+     * Get all stock movements for this team.
+     *
+     * @return HasMany<StockMovement, $this>
+     */
+    public function stockMovements(): HasMany
+    {
+        return $this->hasMany(StockMovement::class);
+    }
+
+    /**
+     * Get the team's default warehouse.
+     */
+    public function defaultWarehouse(): ?Warehouse
+    {
+        return $this->warehouses()->where('is_default', true)->first()
+            ?? $this->warehouses()->orderBy('id')->first();
     }
 
     /**

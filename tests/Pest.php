@@ -1,5 +1,12 @@
 <?php
 
+use App\Actions\Inventory\RecordStockMovement;
+use App\Enums\StockMovementType;
+use App\Models\InventoryItem;
+use App\Models\Team;
+use App\Models\User;
+use App\Models\Warehouse;
+use App\Models\WarehouseLocation;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
@@ -44,7 +51,51 @@ expect()->extend('toBeOne', function () {
 |
 */
 
-function something()
-{
-    // ..
+/**
+ * Create an inventory item and, when a quantity is supplied, record its
+ * opening balance through the stock ledger.
+ *
+ * @param  array<string, mixed>  $attributes
+ */
+function createInventoryItem(
+    Team $team,
+    array $attributes = [],
+    ?int $quantity = null,
+    ?Warehouse $warehouse = null,
+    ?WarehouseLocation $location = null,
+    ?User $user = null,
+): InventoryItem {
+    $quantity ??= (int) ($attributes['quantity'] ?? 0);
+    unset($attributes['quantity'], $attributes['location']);
+
+    $item = $team->inventoryItems()->create([
+        'sku' => fake()->unique()->bothify('SKU-####'),
+        'name' => fake()->words(2, true),
+        'category' => null,
+        'reorder_point' => 0,
+        'unit_cost' => 0,
+        ...$attributes,
+        'quantity' => 0,
+    ]);
+
+    if ($quantity <= 0) {
+        return $item;
+    }
+
+    $warehouse ??= $team->defaultWarehouse();
+    $location ??= $warehouse->defaultLocation();
+
+    app(RecordStockMovement::class)->handle(
+        team: $team,
+        inventoryItem: $item,
+        warehouse: $warehouse,
+        location: $location,
+        type: StockMovementType::Opening,
+        quantity: $quantity,
+        unitCost: (float) $item->unit_cost,
+        reason: 'Opening balance',
+        user: $user,
+    );
+
+    return $item->refresh();
 }

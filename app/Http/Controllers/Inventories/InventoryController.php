@@ -2,15 +2,22 @@
 
 namespace App\Http\Controllers\Inventories;
 
+use App\Actions\Inventory\RecordStockMovement;
+use App\Enums\StockMovementType;
 use App\Http\Controllers\Controller;
 use App\Models\InventoryItem;
+use App\Models\StockLevel;
+use App\Models\StockMovement;
 use App\Models\User;
+use App\Models\Warehouse;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 use Inertia\Inertia;
 use Inertia\Response;
 use Spatie\Activitylog\Models\Activity;
@@ -27,12 +34,18 @@ class InventoryController extends Controller
         Gate::authorize('viewAny', InventoryItem::class);
 
         $status = $request->input('status');
+        $warehouse = (int) $request->input('warehouse', 0);
+        $warehouse = $warehouse > 0 && $team->warehouses()->whereKey($warehouse)->exists()
+            ? $warehouse
+            : 0;
         $filters = [
             'search' => (string) $request->string('search')->trim(),
             'status' => in_array($status, ['low', 'out'], true) ? $status : 'all',
+            'warehouse' => $warehouse,
         ];
 
         $inventoryItems = $team->inventoryItems()
+            ->with(['stockLevels.warehouse', 'stockLevels.location'])
             ->when($filters['search'] !== '', function ($query) use ($filters): void {
                 $search = '%'.$filters['search'].'%';
 
@@ -40,9 +53,17 @@ class InventoryController extends Controller
                     $query->where('name', 'like', $search)
                         ->orWhere('sku', 'like', $search)
                         ->orWhere('category', 'like', $search)
-                        ->orWhere('location', 'like', $search);
+                        ->orWhereHas('stockLevels.warehouse', fn ($query) => $query
+                            ->where('name', 'like', $search)
+                            ->orWhere('code', 'like', $search))
+                        ->orWhereHas('stockLevels.location', fn ($query) => $query
+                            ->where('name', 'like', $search)
+                            ->orWhere('code', 'like', $search));
                 });
             })
+            ->when($filters['warehouse'] > 0, fn ($query) => $query
+                ->whereHas('stockLevels', fn ($query) => $query
+                    ->where('warehouse_id', $filters['warehouse'])))
             ->when($filters['status'] === 'low', fn ($query) => $query
                 ->where('quantity', '>', 0)
                 ->whereColumn('quantity', '<=', 'reorder_point'))
@@ -52,6 +73,34 @@ class InventoryController extends Controller
             ->paginate(25)
             ->withQueryString()
             ->through(fn (InventoryItem $item): array => $this->toArray($item));
+
+        $warehouses = $team->warehouses()
+            ->with(['locations' => fn ($query) => $query
+                ->withSum('stockLevels as total_units', 'quantity')
+                ->orderByDesc('is_default')
+                ->orderBy('name')])
+            ->withSum('stockLevels as total_units', 'quantity')
+            ->orderByDesc('is_default')
+            ->orderBy('name')
+            ->get()
+            ->map(fn (Warehouse $warehouse): array => [
+                'id' => $warehouse->id,
+                'code' => $warehouse->code,
+                'name' => $warehouse->name,
+                'isDefault' => $warehouse->is_default,
+                'totalUnits' => (int) ($warehouse->total_units ?? 0),
+                'locations' => $warehouse->locations
+                    ->map(fn ($location): array => [
+                        'id' => $location->id,
+                        'code' => $location->code,
+                        'name' => $location->name,
+                        'isDefault' => $location->is_default,
+                        'totalUnits' => (int) ($location->total_units ?? 0),
+                    ])
+                    ->values()
+                    ->all(),
+            ])
+            ->values();
 
         $activities = Activity::query()
             ->with('causer')
@@ -77,6 +126,8 @@ class InventoryController extends Controller
 
         return Inertia::render('inventories/Index', [
             'inventoryItems' => $inventoryItems,
+            'warehouses' => $warehouses,
+            'defaultWarehouseId' => $team->defaultWarehouse()?->id,
             'filters' => $filters,
             'summary' => [
                 'totalItems' => $team->inventoryItems()->count(),
@@ -99,7 +150,7 @@ class InventoryController extends Controller
     /**
      * Store a new inventory item for the current team.
      */
-    public function store(Request $request): RedirectResponse
+    public function store(Request $request, RecordStockMovement $recordStockMovement): RedirectResponse
     {
         $team = $request->user()->currentTeam;
 
@@ -118,7 +169,17 @@ class InventoryController extends Controller
                 Rule::unique('inventory_items', 'sku')->where('team_id', $team->id),
             ],
             'category' => ['nullable', 'string', 'max:255'],
-            'location' => ['nullable', 'string', 'max:255'],
+            'warehouse_id' => [
+                'required',
+                'integer',
+                Rule::exists('warehouses', 'id')->where('team_id', $team->id),
+            ],
+            'warehouse_location_id' => [
+                'nullable',
+                'integer',
+                Rule::exists('warehouse_locations', 'id')
+                    ->where('warehouse_id', (int) $request->input('warehouse_id')),
+            ],
             'quantity' => ['required', 'integer', 'min:0'],
             'reorder_point' => ['required', 'integer', 'min:0'],
             'unit_cost' => ['required', 'numeric', 'min:0', 'decimal:0,2'],
@@ -139,7 +200,7 @@ class InventoryController extends Controller
         $storedPaths = [];
 
         try {
-            DB::transaction(function () use ($team, $validated, $imageFiles, $imageIds, $request, &$storedPaths): void {
+            DB::transaction(function () use ($team, $validated, $imageFiles, $imageIds, $request, $recordStockMovement, &$storedPaths): void {
                 $images = [];
 
                 foreach ($imageFiles as $index => $imageFile) {
@@ -158,13 +219,31 @@ class InventoryController extends Controller
                     'sku' => strtoupper(trim($validated['sku'])),
                     'name' => trim($validated['name']),
                     'category' => $validated['category'] ?? null,
-                    'location' => $validated['location'] ?? null,
-                    'quantity' => $validated['quantity'],
+                    'quantity' => 0,
                     'reorder_point' => $validated['reorder_point'],
                     'unit_cost' => $validated['unit_cost'],
                     'images' => $images,
                     'main_image_id' => $validated['main_image_id'] ?? null,
                 ]);
+
+                if ((int) $validated['quantity'] > 0) {
+                    $warehouse = $team->warehouses()->findOrFail($validated['warehouse_id']);
+                    $location = isset($validated['warehouse_location_id'])
+                        ? $warehouse->locations()->findOrFail($validated['warehouse_location_id'])
+                        : $warehouse->defaultLocation();
+
+                    $recordStockMovement->handle(
+                        team: $team,
+                        inventoryItem: $item,
+                        warehouse: $warehouse,
+                        location: $location,
+                        type: StockMovementType::Opening,
+                        quantity: (int) $validated['quantity'],
+                        unitCost: (float) $validated['unit_cost'],
+                        reason: 'Opening balance',
+                        user: $request->user(),
+                    );
+                }
 
                 activity('inventory')
                     ->causedBy($request->user())
@@ -211,7 +290,6 @@ class InventoryController extends Controller
                     ->ignore($item->id),
             ],
             'category' => ['nullable', 'string', 'max:255'],
-            'location' => ['nullable', 'string', 'max:255'],
             'reorder_point' => ['required', 'integer', 'min:0'],
             'unit_cost' => ['required', 'numeric', 'min:0', 'decimal:0,2'],
         ]);
@@ -220,7 +298,6 @@ class InventoryController extends Controller
             'name',
             'sku',
             'category',
-            'location',
             'reorder_point',
             'unit_cost',
         ]);
@@ -262,6 +339,12 @@ class InventoryController extends Controller
 
         Gate::authorize('delete', $item);
 
+        if ($item->quantity > 0) {
+            throw ValidationException::withMessages([
+                'inventory_item' => 'Move all remaining stock out before deleting this item.',
+            ]);
+        }
+
         $images = collect($item->images ?? []);
         $imageNames = $images->pluck('name')->all();
         $imagePaths = $images
@@ -288,10 +371,14 @@ class InventoryController extends Controller
     }
 
     /**
-     * Adjust the stock quantity of an inventory item.
+     * Record a stock receipt or adjustment for an inventory item.
      */
-    public function stock(Request $request, string $currentTeamSlug, InventoryItem $inventoryItem): RedirectResponse
-    {
+    public function stock(
+        Request $request,
+        string $currentTeamSlug,
+        InventoryItem $inventoryItem,
+        RecordStockMovement $recordStockMovement,
+    ): RedirectResponse {
         $team = $request->user()->currentTeam;
         $item = $team->inventoryItems()->findOrFail($inventoryItem->id);
 
@@ -299,37 +386,84 @@ class InventoryController extends Controller
 
         $validated = $request->validate([
             'direction' => ['required', Rule::in(['receive', 'remove'])],
+            'warehouse_id' => [
+                'required',
+                'integer',
+                Rule::exists('warehouses', 'id')->where('team_id', $team->id),
+            ],
+            'warehouse_location_id' => [
+                'nullable',
+                'integer',
+                Rule::exists('warehouse_locations', 'id')
+                    ->where('warehouse_id', (int) $request->input('warehouse_id')),
+            ],
             'amount' => ['required', 'integer', 'min:1', 'max:1000000'],
-            'reason' => ['nullable', 'string', 'max:255'],
+            'reason' => [
+                $request->input('direction') === 'remove' ? 'required' : 'nullable',
+                'string',
+                'max:255',
+            ],
+            'reference' => ['nullable', 'string', 'max:255'],
         ]);
 
+        $warehouse = $team->warehouses()->findOrFail($validated['warehouse_id']);
+        $location = isset($validated['warehouse_location_id'])
+            ? $warehouse->locations()->findOrFail($validated['warehouse_location_id'])
+            : $warehouse->defaultLocation();
         $amount = (int) $validated['amount'];
+        $isReceipt = $validated['direction'] === 'receive';
 
-        DB::transaction(function () use ($team, $inventoryItem, $validated, $request, $amount): void {
-            $item = $team->inventoryItems()->lockForUpdate()->findOrFail($inventoryItem->id);
-            $quantityBefore = $item->quantity;
-            $quantityAfter = $validated['direction'] === 'receive'
-                ? $quantityBefore + $amount
-                : max(0, $quantityBefore - $amount);
-
-            $item->update(['quantity' => $quantityAfter]);
-
-            activity('inventory')
-                ->causedBy($request->user())
-                ->withProperties([
-                    'team_id' => $team->id,
-                    'item_name' => $item->name,
-                    'sku' => $item->sku,
-                    'direction' => $validated['direction'],
-                    'amount' => $amount,
-                    'quantity_before' => $quantityBefore,
-                    'quantity_after' => $quantityAfter,
-                    'reason' => $validated['reason'] ?? null,
-                ])
-                ->log('Inventory Stock Adjusted');
-        });
+        $recordStockMovement->handle(
+            team: $team,
+            inventoryItem: $item,
+            warehouse: $warehouse,
+            location: $location,
+            type: $isReceipt ? StockMovementType::Receipt : StockMovementType::Adjustment,
+            quantity: $isReceipt ? $amount : -$amount,
+            unitCost: (float) $item->unit_cost,
+            reference: ($validated['reference'] ?? '') ?: null,
+            reason: ($validated['reason'] ?? '') ?: ($isReceipt ? 'Stock received' : null),
+            user: $request->user(),
+        );
 
         return back();
+    }
+
+    /**
+     * Return the movement history for an inventory item.
+     */
+    public function movements(Request $request, string $currentTeamSlug, InventoryItem $inventoryItem): JsonResponse
+    {
+        $team = $request->user()->currentTeam;
+        $item = $team->inventoryItems()->findOrFail($inventoryItem->id);
+
+        Gate::authorize('view', $item);
+
+        $movements = $item->stockMovements()
+            ->with(['warehouse', 'location', 'user'])
+            ->latest()
+            ->latest('id')
+            ->paginate(50)
+            ->withQueryString()
+            ->through(fn (StockMovement $movement): array => [
+                'id' => $movement->id,
+                'type' => $movement->type->value,
+                'typeLabel' => $movement->type->label(),
+                'itemName' => $movement->item_name,
+                'sku' => $movement->sku,
+                'warehouseName' => $movement->warehouse?->name,
+                'locationName' => $movement->location?->name,
+                'quantity' => $movement->quantity,
+                'quantityBefore' => $movement->quantity_before,
+                'quantityAfter' => $movement->quantity_after,
+                'unitCost' => (float) $movement->unit_cost,
+                'reference' => $movement->reference,
+                'reason' => $movement->reason,
+                'userName' => $movement->user?->name ?? 'System',
+                'createdAt' => $movement->created_at?->toIso8601String(),
+            ]);
+
+        return response()->json($movements);
     }
 
     /**
@@ -437,10 +571,21 @@ class InventoryController extends Controller
             'sku' => $item->sku,
             'name' => $item->name,
             'category' => $item->category ?? '',
-            'location' => $item->location ?? '',
             'quantity' => $item->quantity,
             'reorderPoint' => $item->reorder_point,
             'unitCost' => (float) $item->unit_cost,
+            'stock' => $item->stockLevels
+                ->map(fn (StockLevel $level): array => [
+                    'warehouseId' => $level->warehouse_id,
+                    'warehouseName' => $level->warehouse?->name,
+                    'warehouseCode' => $level->warehouse?->code,
+                    'locationId' => $level->warehouse_location_id,
+                    'locationName' => $level->location?->name,
+                    'locationCode' => $level->location?->code,
+                    'quantity' => $level->quantity,
+                ])
+                ->values()
+                ->all(),
             'images' => collect($item->images ?? [])
                 ->map(fn (array $image): array => [
                     'id' => $image['id'],

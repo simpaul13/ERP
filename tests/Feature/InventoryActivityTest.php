@@ -58,6 +58,7 @@ test('inventory index only exposes activities for the current team', function ()
         [
             'name' => 'Shipping carton',
             'sku' => 'BX-2048',
+            'warehouse_id' => $team->defaultWarehouse()->id,
             'quantity' => 2,
             'reorder_point' => 1,
             'unit_cost' => 1,
@@ -71,6 +72,7 @@ test('inventory index only exposes activities for the current team', function ()
             [
                 'name' => 'Other carton',
                 'sku' => 'BX-4096',
+                'warehouse_id' => $otherTeam->defaultWarehouse()->id,
                 'quantity' => 2,
                 'reorder_point' => 1,
                 'unit_cost' => 1,
