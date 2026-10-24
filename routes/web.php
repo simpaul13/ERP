@@ -15,6 +15,7 @@ Route::prefix('{current_team}')
     ->group(function () {
         Route::get('dashboard', DashboardController::class)->name('dashboard');
         Route::get('inventories', [InventoryController::class, 'index'])->name('inventories.index');
+        Route::get('inventories/{inventoryItem}', [InventoryController::class, 'show'])->name('inventories.show');
         Route::post('inventories', [InventoryController::class, 'store'])->name('inventories.store');
         Route::patch('inventories/{inventoryItem}', [InventoryController::class, 'update'])->name('inventories.update');
         Route::delete('inventories/{inventoryItem}', [InventoryController::class, 'destroy'])->name('inventories.destroy');
@@ -23,6 +24,7 @@ Route::prefix('{current_team}')
         Route::post('inventories/{inventoryItem}/images', [InventoryController::class, 'updateImages'])->name('inventories.images.update');
 
         Route::get('warehouses', [WarehouseController::class, 'index'])->name('warehouses.index');
+        Route::get('warehouses/{warehouse}', [WarehouseController::class, 'show'])->name('warehouses.show');
         Route::post('warehouses', [WarehouseController::class, 'store'])->name('warehouses.store');
         Route::patch('warehouses/{warehouse}', [WarehouseController::class, 'update'])->name('warehouses.update');
         Route::delete('warehouses/{warehouse}', [WarehouseController::class, 'destroy'])->name('warehouses.destroy');

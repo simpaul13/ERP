@@ -174,6 +174,16 @@ test('team members cannot manage warehouses or bins', function () {
     $this->actingAs($member)
         ->get($indexUrl)
         ->assertInertia(fn (Assert $page) => $page->where('canManage', false));
+
+    $this->actingAs($member)
+        ->get(route('warehouses.show', [
+            'current_team' => $team->slug,
+            'warehouse' => $warehouse->id,
+        ]))
+        ->assertOk()
+        ->assertInertia(fn (Assert $page) => $page
+            ->component('inventories/WarehouseProfile')
+            ->where('canManage', false));
 });
 
 test('warehouses and bins from another team return not found', function () {
@@ -245,6 +255,58 @@ test('warehouses with stock and the last warehouse cannot be archived', function
         ->assertSessionHasErrors('warehouse');
 
     expect($warehouse->fresh())->not->toBeNull();
+});
+
+test('team members can view a warehouse profile with its stock and movements', function () {
+    $user = User::factory()->create();
+    $team = $user->personalTeam();
+    $warehouse = $team->defaultWarehouse();
+    createInventoryItem($team, [
+        'sku' => 'BX-1',
+        'name' => 'Carton',
+        'unit_cost' => 2.5,
+        'reorder_point' => 10,
+    ], 3, $warehouse);
+
+    $this->actingAs($user)
+        ->get(route('warehouses.show', [
+            'current_team' => $team->slug,
+            'warehouse' => $warehouse->id,
+        ]))
+        ->assertOk()
+        ->assertInertia(fn (Assert $page) => $page
+            ->component('inventories/WarehouseProfile')
+            ->where('warehouse.id', $warehouse->id)
+            ->where('warehouse.isDefault', true)
+            ->where('summary.totalUnits', 3)
+            ->where('summary.stockedItems', 1)
+            ->where('summary.lowStockItems', 1)
+            ->where('summary.totalBins', 1)
+            ->where('summary.inventoryValue', 7.5)
+            ->has('bins', 1)
+            ->where('bins.0.totalUnits', 3)
+            ->where('bins.0.stockedItems', 1)
+            ->has('items', 1)
+            ->where('items.0.sku', 'BX-1')
+            ->where('items.0.quantity', 3)
+            ->where('items.0.status', 'low')
+            ->has('movements', 1)
+            ->where('movements.0.sku', 'BX-1')
+            ->where('movements.0.typeLabel', 'Opening balance')
+            ->where('canManage', true));
+});
+
+test('warehouse profiles from another team return not found', function () {
+    $user = User::factory()->create();
+    $otherUser = User::factory()->create();
+    $otherWarehouse = $otherUser->personalTeam()->defaultWarehouse();
+
+    $this->actingAs($user)
+        ->get(route('warehouses.show', [
+            'current_team' => $user->currentTeam->slug,
+            'warehouse' => $otherWarehouse->id,
+        ]))
+        ->assertNotFound();
 });
 
 test('default bins and bins holding stock cannot be removed', function () {

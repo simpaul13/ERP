@@ -8,11 +8,13 @@ use App\Http\Controllers\Controller;
 use App\Models\InventoryItem;
 use App\Models\StockLevel;
 use App\Models\StockMovement;
+use App\Models\Team;
 use App\Models\User;
 use App\Models\Warehouse;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\Storage;
@@ -74,33 +76,7 @@ class InventoryController extends Controller
             ->withQueryString()
             ->through(fn (InventoryItem $item): array => $this->toArray($item));
 
-        $warehouses = $team->warehouses()
-            ->with(['locations' => fn ($query) => $query
-                ->withSum('stockLevels as total_units', 'quantity')
-                ->orderByDesc('is_default')
-                ->orderBy('name')])
-            ->withSum('stockLevels as total_units', 'quantity')
-            ->orderByDesc('is_default')
-            ->orderBy('name')
-            ->get()
-            ->map(fn (Warehouse $warehouse): array => [
-                'id' => $warehouse->id,
-                'code' => $warehouse->code,
-                'name' => $warehouse->name,
-                'isDefault' => $warehouse->is_default,
-                'totalUnits' => (int) ($warehouse->total_units ?? 0),
-                'locations' => $warehouse->locations
-                    ->map(fn ($location): array => [
-                        'id' => $location->id,
-                        'code' => $location->code,
-                        'name' => $location->name,
-                        'isDefault' => $location->is_default,
-                        'totalUnits' => (int) ($location->total_units ?? 0),
-                    ])
-                    ->values()
-                    ->all(),
-            ])
-            ->values();
+        $warehouses = $this->warehouseOptions($team);
 
         $activities = Activity::query()
             ->with('causer')
@@ -144,6 +120,38 @@ class InventoryController extends Controller
             ],
             'activities' => $activities,
             'canManage' => $request->user()->can('create', InventoryItem::class),
+        ]);
+    }
+
+    /**
+     * Display the profile page for a single inventory item.
+     */
+    public function show(Request $request, string $currentTeamSlug, InventoryItem $inventoryItem): Response
+    {
+        $team = $request->user()->currentTeam;
+
+        $item = $team->inventoryItems()
+            ->with(['stockLevels.warehouse', 'stockLevels.location'])
+            ->findOrFail($inventoryItem->id);
+
+        Gate::authorize('view', $item);
+
+        $movements = $item->stockMovements()
+            ->with(['warehouse', 'location', 'user'])
+            ->latest()
+            ->latest('id')
+            ->limit(20)
+            ->get()
+            ->map(fn (StockMovement $movement): array => $this->movementToArray($movement))
+            ->values();
+
+        return Inertia::render('inventories/Show', [
+            'item' => $this->toArray($item),
+            'movements' => $movements,
+            'warehouses' => $this->warehouseOptions($team),
+            'defaultWarehouseId' => $team->defaultWarehouse()?->id,
+            'movementCount' => $item->stockMovements()->count(),
+            'canManage' => $request->user()->can('update', $item),
         ]);
     }
 
@@ -445,23 +453,7 @@ class InventoryController extends Controller
             ->latest('id')
             ->paginate(50)
             ->withQueryString()
-            ->through(fn (StockMovement $movement): array => [
-                'id' => $movement->id,
-                'type' => $movement->type->value,
-                'typeLabel' => $movement->type->label(),
-                'itemName' => $movement->item_name,
-                'sku' => $movement->sku,
-                'warehouseName' => $movement->warehouse?->name,
-                'locationName' => $movement->location?->name,
-                'quantity' => $movement->quantity,
-                'quantityBefore' => $movement->quantity_before,
-                'quantityAfter' => $movement->quantity_after,
-                'unitCost' => (float) $movement->unit_cost,
-                'reference' => $movement->reference,
-                'reason' => $movement->reason,
-                'userName' => $movement->user?->name ?? 'System',
-                'createdAt' => $movement->created_at?->toIso8601String(),
-            ]);
+            ->through(fn (StockMovement $movement): array => $this->movementToArray($movement));
 
         return response()->json($movements);
     }
@@ -594,7 +586,71 @@ class InventoryController extends Controller
                 ])
                 ->all(),
             'mainImageId' => $item->main_image_id,
+            'createdAt' => $item->created_at?->toIso8601String(),
+            'updatedAt' => $item->updated_at?->toIso8601String(),
         ];
+    }
+
+    /**
+     * Convert a stock movement into the frontend shape.
+     *
+     * @return array<string, mixed>
+     */
+    private function movementToArray(StockMovement $movement): array
+    {
+        return [
+            'id' => $movement->id,
+            'type' => $movement->type->value,
+            'typeLabel' => $movement->type->label(),
+            'itemName' => $movement->item_name,
+            'sku' => $movement->sku,
+            'warehouseName' => $movement->warehouse?->name,
+            'locationName' => $movement->location?->name,
+            'quantity' => $movement->quantity,
+            'quantityBefore' => $movement->quantity_before,
+            'quantityAfter' => $movement->quantity_after,
+            'unitCost' => (float) $movement->unit_cost,
+            'reference' => $movement->reference,
+            'reason' => $movement->reason,
+            'userName' => $movement->user?->name ?? 'System',
+            'createdAt' => $movement->created_at?->toIso8601String(),
+        ];
+    }
+
+    /**
+     * Build the warehouse and bin options used by the inventory screens.
+     *
+     * @return Collection<int, array<string, mixed>>
+     */
+    private function warehouseOptions(Team $team): Collection
+    {
+        return $team->warehouses()
+            ->with(['locations' => fn ($query) => $query
+                ->withSum('stockLevels as total_units', 'quantity')
+                ->orderByDesc('is_default')
+                ->orderBy('name')])
+            ->withSum('stockLevels as total_units', 'quantity')
+            ->orderByDesc('is_default')
+            ->orderBy('name')
+            ->get()
+            ->map(fn (Warehouse $warehouse): array => [
+                'id' => $warehouse->id,
+                'code' => $warehouse->code,
+                'name' => $warehouse->name,
+                'isDefault' => $warehouse->is_default,
+                'totalUnits' => (int) ($warehouse->total_units ?? 0),
+                'locations' => $warehouse->locations
+                    ->map(fn ($location): array => [
+                        'id' => $location->id,
+                        'code' => $location->code,
+                        'name' => $location->name,
+                        'isDefault' => $location->is_default,
+                        'totalUnits' => (int) ($location->total_units ?? 0),
+                    ])
+                    ->values()
+                    ->all(),
+            ])
+            ->values();
     }
 
     /**

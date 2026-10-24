@@ -26,13 +26,25 @@ async function createInventoryItem(
     await screen.getByLabel('Product name').fill(name);
     await screen.getByLabel('SKU').fill(sku);
     await screen.getByLabel('Category').fill('Testing');
-    await screen.getByLabel('Location').fill('QA warehouse');
-    await screen.getByLabel('Available units').fill(String(quantity));
+    await screen.getByLabel('Opening quantity').fill(String(quantity));
     await screen.getByLabel('Reorder point').fill('4');
     await screen.getByLabel('Unit cost').fill('1.25');
     await screen.getByRole('button', 'Add item').last().tap();
+    await expect(
+        screen.getByRole('dialog', 'Add inventory item'),
+    ).toHaveCount(0);
+    await screen.getByLabel('Search inventory').fill(sku);
 
     await expect(screen.getByText(name)).toBeVisible();
+}
+
+async function tapItemMenuAction(
+    screen: Screen,
+    itemName: string,
+    action: string,
+): Promise<void> {
+    await screen.getByRole('button', `More actions for ${itemName}`).tap();
+    await screen.getByRole('menuitem', action).tap();
 }
 
 describe('inventory module', () => {
@@ -71,9 +83,7 @@ describe('inventory module', () => {
             await createInventoryItem(screen, sku, itemName);
             const itemRow = screen.getByRole('row').filter({ hasText: sku });
 
-            await screen
-                .getByRole('button', `Receive stock for ${itemName}`)
-                .tap();
+            await tapItemMenuAction(screen, itemName, 'Receive stock');
             await screen.getByLabel('Units to receive').fill('5');
             await screen.getByRole('button', 'Confirm adjustment').tap();
 
@@ -91,9 +101,7 @@ describe('inventory module', () => {
             const itemName = `E2E Image Upload Item ${sku}`;
 
             await createInventoryItem(screen, sku, itemName);
-            await screen
-                .getByRole('button', `Manage product images for ${itemName}`)
-                .tap();
+            await tapItemMenuAction(screen, itemName, 'Manage photos');
             await screen
                 .getByLabel(/Choose product photos/)
                 .setInputFiles('tests/e2e/fixtures/product-image-one.png');
@@ -116,9 +124,7 @@ describe('inventory module', () => {
             const itemName = `E2E Image Removal Item ${sku}`;
 
             await createInventoryItem(screen, sku, itemName);
-            await screen
-                .getByRole('button', `Manage product images for ${itemName}`)
-                .tap();
+            await tapItemMenuAction(screen, itemName, 'Manage photos');
             await screen
                 .getByLabel(/Choose product photos/)
                 .setInputFiles('tests/e2e/fixtures/product-image-one.png');
@@ -130,9 +136,7 @@ describe('inventory module', () => {
             ).toBeVisible();
             await screen.getByRole('button', 'Save images').tap();
 
-            await screen
-                .getByRole('button', `Manage product images for ${itemName}`)
-                .tap();
+            await tapItemMenuAction(screen, itemName, 'Manage photos');
             await expect(
                 screen.getByText('No product photos yet'),
             ).toBeVisible();
@@ -147,9 +151,7 @@ describe('inventory module', () => {
             const itemName = `E2E Main Image Item ${sku}`;
 
             await createInventoryItem(screen, sku, itemName);
-            await screen
-                .getByRole('button', `Manage product images for ${itemName}`)
-                .tap();
+            await tapItemMenuAction(screen, itemName, 'Manage photos');
             await screen
                 .getByLabel(/Choose product photos/)
                 .setInputFiles([
@@ -180,7 +182,7 @@ describe('inventory module', () => {
             const updatedName = `${itemName} Updated`;
 
             await createInventoryItem(screen, sku, itemName);
-            await screen.getByRole('button', `Edit ${itemName}`).tap();
+            await tapItemMenuAction(screen, itemName, 'Edit item');
             await screen.getByLabel('Product name').fill(updatedName);
             await screen.getByLabel('Unit cost').fill('2.50');
             await screen.getByRole('button', 'Save changes').tap();
@@ -198,8 +200,8 @@ describe('inventory module', () => {
             const sku = `E2E-DELETE-${Date.now()}`;
             const itemName = `E2E Delete Item ${sku}`;
 
-            await createInventoryItem(screen, sku, itemName);
-            await screen.getByRole('button', `Delete ${itemName}`).tap();
+            await createInventoryItem(screen, sku, itemName, 0);
+            await tapItemMenuAction(screen, itemName, 'Delete item');
             await screen.getByRole('button', 'Delete item').tap();
 
             await expect(screen.getByText(itemName)).toHaveCount(0);
@@ -214,9 +216,7 @@ describe('inventory module', () => {
             const itemName = `E2E History Item ${sku}`;
 
             await createInventoryItem(screen, sku, itemName);
-            await screen
-                .getByRole('button', `Receive stock for ${itemName}`)
-                .tap();
+            await tapItemMenuAction(screen, itemName, 'Receive stock');
             await screen.getByLabel('Units to receive').fill('3');
             await screen.getByRole('button', 'Confirm adjustment').tap();
             await screen.getByRole('button', 'History').tap();
@@ -227,7 +227,7 @@ describe('inventory module', () => {
                 history.getByText('Inventory Created').first(),
             ).toBeVisible();
             await expect(
-                history.getByText('Inventory Stock Adjusted').first(),
+                history.getByText('Inventory Stock Received').first(),
             ).toBeVisible();
             await expect(
                 history.getByText(itemName, { exact: false }).first(),

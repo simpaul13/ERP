@@ -1,5 +1,7 @@
 <?php
 
+use App\Actions\Inventory\RecordStockMovement;
+use App\Enums\StockMovementType;
 use App\Enums\TeamRole;
 use App\Models\InventoryItem;
 use App\Models\Team;
@@ -638,4 +640,103 @@ test('inventory index exposes team activities and management permissions', funct
             ->where('filters.search', '')
             ->where('filters.status', 'all'),
         );
+});
+
+test('inventory item profile page shows stock, movement history, and management permissions', function () {
+    $user = User::factory()->create();
+    $team = $user->personalTeam();
+    $warehouse = $team->defaultWarehouse();
+    $bin = $warehouse->defaultLocation();
+    $item = createInventoryItem($team, [
+        'sku' => 'BX-2048',
+        'name' => 'Shipping carton',
+        'category' => 'Packaging',
+        'reorder_point' => 5,
+        'unit_cost' => 2.50,
+    ], 10, $warehouse, $bin);
+
+    app(RecordStockMovement::class)->handle(
+        team: $team,
+        inventoryItem: $item,
+        warehouse: $warehouse,
+        location: $bin,
+        type: StockMovementType::Receipt,
+        quantity: 5,
+        unitCost: 2.50,
+        reference: 'PO-1001',
+        reason: 'Delivery',
+        user: $user,
+    );
+
+    $response = $this->actingAs($user)->get(route('inventories.show', [
+        'current_team' => $team->slug,
+        'inventoryItem' => $item->id,
+    ]));
+
+    $response->assertOk();
+    $response->assertInertia(fn (Assert $page) => $page
+        ->component('inventories/Show')
+        ->where('item.sku', 'BX-2048')
+        ->where('item.name', 'Shipping carton')
+        ->where('item.category', 'Packaging')
+        ->where('item.quantity', 15)
+        ->where('item.reorderPoint', 5)
+        ->where('item.unitCost', 2.5)
+        ->has('item.stock', 1)
+        ->where('item.stock.0.warehouseId', $warehouse->id)
+        ->where('item.stock.0.locationId', $bin->id)
+        ->where('item.stock.0.quantity', 15)
+        ->has('movements', 2)
+        ->where('movements.0.type', 'receipt')
+        ->where('movements.0.quantity', 5)
+        ->where('movements.0.reason', 'Delivery')
+        ->where('movementCount', 2)
+        ->where('canManage', true)
+        ->has('warehouses', 1),
+    );
+});
+
+test('team members without management rights can view the inventory profile in read only mode', function () {
+    $owner = User::factory()->create();
+    $member = User::factory()->create();
+    $team = Team::factory()->create();
+    $team->members()->attach($owner, ['role' => TeamRole::Owner->value]);
+    $team->members()->attach($member, ['role' => TeamRole::Member->value]);
+    $item = createInventoryItem($team, [
+        'sku' => 'BX-2048',
+        'name' => 'Shipping carton',
+        'reorder_point' => 5,
+        'unit_cost' => 1.50,
+    ], 4);
+
+    $this->actingAs($member)
+        ->get(route('inventories.show', [
+            'current_team' => $team->slug,
+            'inventoryItem' => $item->id,
+        ]))
+        ->assertOk()
+        ->assertInertia(fn (Assert $page) => $page
+            ->component('inventories/Show')
+            ->where('item.sku', 'BX-2048')
+            ->where('canManage', false),
+        );
+});
+
+test('inventory profiles from another team return not found', function () {
+    $user = User::factory()->create();
+    $otherUser = User::factory()->create();
+    $otherTeam = $otherUser->personalTeam();
+    $item = createInventoryItem($otherTeam, [
+        'sku' => 'BX-2048',
+        'name' => 'Other carton',
+        'reorder_point' => 2,
+        'unit_cost' => 1,
+    ], 5);
+
+    $this->actingAs($user)
+        ->get(route('inventories.show', [
+            'current_team' => $user->currentTeam->slug,
+            'inventoryItem' => $item->id,
+        ]))
+        ->assertNotFound();
 });

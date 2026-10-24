@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { Head, router, usePage } from '@inertiajs/vue3';
+import { Head, Link, router, usePage } from '@inertiajs/vue3';
 import {
     Boxes,
+    Eye,
     MapPin,
     Pencil,
     Plus,
@@ -9,18 +10,11 @@ import {
     Warehouse as WarehouseIcon,
 } from '@lucide/vue';
 import { computed, ref } from 'vue';
+import BinDialog from '@/components/inventory/BinDialog.vue';
+import ConfirmActionDialog from '@/components/inventory/ConfirmActionDialog.vue';
+import WarehouseDialog from '@/components/inventory/WarehouseDialog.vue';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import {
-    Dialog,
-    DialogContent,
-    DialogDescription,
-    DialogFooter,
-    DialogHeader,
-    DialogTitle,
-} from '@/components/ui/dialog';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 
 type WarehouseBin = {
     id: number;
@@ -64,14 +58,6 @@ const page = usePage();
 
 const warehouseDialogOpen = ref(false);
 const editingWarehouse = ref<WarehouseRecord | null>(null);
-const warehouseForm = ref({
-    name: '',
-    code: '',
-    address: '',
-    isDefault: false,
-});
-const savingWarehouse = ref(false);
-const warehouseError = ref('');
 
 const deleteDialogOpen = ref(false);
 const deletingWarehouse = ref<WarehouseRecord | null>(null);
@@ -81,9 +67,6 @@ const warehouseDeleteError = ref('');
 const binDialogOpen = ref(false);
 const binWarehouse = ref<WarehouseRecord | null>(null);
 const editingBin = ref<WarehouseBin | null>(null);
-const binForm = ref({ name: '', code: '' });
-const savingBin = ref(false);
-const binError = ref('');
 
 const deleteBinOpen = ref(false);
 const deletingBin = ref<WarehouseBin | null>(null);
@@ -113,69 +96,20 @@ function firstError(errors: Record<string, string>): string {
     );
 }
 
+function warehouseUrl(warehouse: WarehouseRecord): string {
+    const slug = currentTeamSlug();
+
+    return slug ? `/${slug}/warehouses/${warehouse.id}` : '#';
+}
+
 function openCreateWarehouse(): void {
     editingWarehouse.value = null;
-    warehouseForm.value = {
-        name: '',
-        code: '',
-        address: '',
-        isDefault: props.warehouses.length === 0,
-    };
-    warehouseError.value = '';
     warehouseDialogOpen.value = true;
 }
 
 function openEditWarehouse(warehouse: WarehouseRecord): void {
     editingWarehouse.value = warehouse;
-    warehouseForm.value = {
-        name: warehouse.name,
-        code: warehouse.code,
-        address: warehouse.address,
-        isDefault: warehouse.isDefault,
-    };
-    warehouseError.value = '';
     warehouseDialogOpen.value = true;
-}
-
-function saveWarehouse(): void {
-    const slug = currentTeamSlug();
-
-    if (!slug || savingWarehouse.value || !warehouseForm.value.name.trim()) {
-        return;
-    }
-
-    const url = editingWarehouse.value
-        ? `/${slug}/warehouses/${editingWarehouse.value.id}`
-        : `/${slug}/warehouses`;
-
-    warehouseError.value = '';
-    savingWarehouse.value = true;
-
-    const options = {
-        preserveScroll: true,
-        onSuccess: () => {
-            warehouseDialogOpen.value = false;
-        },
-        onError: (errors: Record<string, string>) => {
-            warehouseError.value = firstError(errors);
-        },
-        onFinish: () => {
-            savingWarehouse.value = false;
-        },
-    };
-
-    const payload = {
-        name: warehouseForm.value.name.trim(),
-        code: warehouseForm.value.code.trim(),
-        address: warehouseForm.value.address.trim(),
-        is_default: warehouseForm.value.isDefault,
-    };
-
-    if (editingWarehouse.value) {
-        router.patch(url, payload, options);
-    } else {
-        router.post(url, payload, options);
-    }
 }
 
 function openDeleteWarehouse(warehouse: WarehouseRecord): void {
@@ -211,57 +145,13 @@ function confirmDeleteWarehouse(): void {
 function openCreateBin(warehouse: WarehouseRecord): void {
     binWarehouse.value = warehouse;
     editingBin.value = null;
-    binForm.value = { name: '', code: '' };
-    binError.value = '';
     binDialogOpen.value = true;
 }
 
 function openEditBin(warehouse: WarehouseRecord, bin: WarehouseBin): void {
     binWarehouse.value = warehouse;
     editingBin.value = bin;
-    binForm.value = { name: bin.name, code: bin.code };
-    binError.value = '';
     binDialogOpen.value = true;
-}
-
-function saveBin(): void {
-    const slug = currentTeamSlug();
-    const warehouse = binWarehouse.value;
-
-    if (!slug || !warehouse || savingBin.value || !binForm.value.name.trim()) {
-        return;
-    }
-
-    const url = editingBin.value
-        ? `/${slug}/warehouses/${warehouse.id}/locations/${editingBin.value.id}`
-        : `/${slug}/warehouses/${warehouse.id}/locations`;
-
-    binError.value = '';
-    savingBin.value = true;
-
-    const options = {
-        preserveScroll: true,
-        onSuccess: () => {
-            binDialogOpen.value = false;
-        },
-        onError: (errors: Record<string, string>) => {
-            binError.value = firstError(errors);
-        },
-        onFinish: () => {
-            savingBin.value = false;
-        },
-    };
-
-    const payload = {
-        name: binForm.value.name.trim(),
-        code: binForm.value.code.trim(),
-    };
-
-    if (editingBin.value) {
-        router.patch(url, payload, options);
-    } else {
-        router.post(url, payload, options);
-    }
 }
 
 function openDeleteBin(warehouse: WarehouseRecord, bin: WarehouseBin): void {
@@ -283,21 +173,18 @@ function confirmDeleteBin(): void {
     binDeleteError.value = '';
     removingBin.value = true;
 
-    router.delete(
-        `/${slug}/warehouses/${warehouse.id}/locations/${bin.id}`,
-        {
-            preserveScroll: true,
-            onSuccess: () => {
-                deleteBinOpen.value = false;
-            },
-            onError: (errors: Record<string, string>) => {
-                binDeleteError.value = firstError(errors);
-            },
-            onFinish: () => {
-                removingBin.value = false;
-            },
+    router.delete(`/${slug}/warehouses/${warehouse.id}/locations/${bin.id}`, {
+        preserveScroll: true,
+        onSuccess: () => {
+            deleteBinOpen.value = false;
         },
-    );
+        onError: (errors: Record<string, string>) => {
+            binDeleteError.value = firstError(errors);
+        },
+        onFinish: () => {
+            removingBin.value = false;
+        },
+    });
 }
 </script>
 
@@ -309,7 +196,9 @@ function confirmDeleteBin(): void {
             class="flex flex-col justify-between gap-4 sm:flex-row sm:items-end"
         >
             <div>
-                <h1 class="text-2xl font-semibold tracking-tight">Warehouses</h1>
+                <h1 class="text-2xl font-semibold tracking-tight">
+                    Warehouses
+                </h1>
                 <p class="mt-1 max-w-2xl text-sm text-muted-foreground">
                     Warehouses are the places that hold your stock. Add bins
                     inside a warehouse to track exactly where an item sits.
@@ -364,7 +253,12 @@ function confirmDeleteBin(): void {
                             <div class="min-w-0">
                                 <div class="flex flex-wrap items-center gap-2">
                                     <h2 class="truncate font-medium">
-                                        {{ warehouse.name }}
+                                        <Link
+                                            :href="warehouseUrl(warehouse)"
+                                            class="hover:underline"
+                                        >
+                                            {{ warehouse.name }}
+                                        </Link>
                                     </h2>
                                     <Badge
                                         v-if="warehouse.isDefault"
@@ -386,27 +280,36 @@ function confirmDeleteBin(): void {
                                 </p>
                             </div>
                         </div>
-                        <div
-                            v-if="canManage"
-                            class="flex shrink-0 items-center gap-1"
-                        >
+                        <div class="flex shrink-0 items-center gap-1">
                             <Button
+                                as-child
                                 variant="ghost"
                                 size="icon-sm"
-                                :aria-label="`Edit ${warehouse.name}`"
-                                @click="openEditWarehouse(warehouse)"
+                                :aria-label="`View ${warehouse.name}`"
                             >
-                                <Pencil class="size-4" />
+                                <Link :href="warehouseUrl(warehouse)">
+                                    <Eye class="size-4" />
+                                </Link>
                             </Button>
-                            <Button
-                                variant="ghost"
-                                size="icon-sm"
-                                class="text-muted-foreground hover:text-destructive"
-                                :aria-label="`Archive ${warehouse.name}`"
-                                @click="openDeleteWarehouse(warehouse)"
-                            >
-                                <Trash2 class="size-4" />
-                            </Button>
+                            <template v-if="canManage">
+                                <Button
+                                    variant="ghost"
+                                    size="icon-sm"
+                                    :aria-label="`Edit ${warehouse.name}`"
+                                    @click="openEditWarehouse(warehouse)"
+                                >
+                                    <Pencil class="size-4" />
+                                </Button>
+                                <Button
+                                    variant="ghost"
+                                    size="icon-sm"
+                                    class="text-muted-foreground hover:text-destructive"
+                                    :aria-label="`Archive ${warehouse.name}`"
+                                    @click="openDeleteWarehouse(warehouse)"
+                                >
+                                    <Trash2 class="size-4" />
+                                </Button>
+                            </template>
                         </div>
                     </div>
                     <div
@@ -470,10 +373,7 @@ function confirmDeleteBin(): void {
                             </template>
                         </div>
                     </div>
-                    <div
-                        v-if="canManage"
-                        class="flex justify-end px-4 py-2.5"
-                    >
+                    <div v-if="canManage" class="flex justify-end px-4 py-2.5">
                         <Button
                             variant="outline"
                             size="sm"
@@ -500,213 +400,44 @@ function confirmDeleteBin(): void {
             </Button>
         </div>
 
-        <Dialog v-model:open="warehouseDialogOpen">
-            <DialogContent>
-                <form class="space-y-5" @submit.prevent="saveWarehouse">
-                    <DialogHeader>
-                        <DialogTitle>{{
-                            editingWarehouse ? 'Edit warehouse' : 'Add warehouse'
-                        }}</DialogTitle>
-                        <DialogDescription>
-                            A warehouse is a physical place that holds stock,
-                            such as a store room or distribution centre.
-                        </DialogDescription>
-                    </DialogHeader>
-                    <div class="grid gap-4">
-                        <div class="grid gap-2">
-                            <Label for="warehouse-name">Name</Label>
-                            <Input
-                                id="warehouse-name"
-                                v-model="warehouseForm.name"
-                                required
-                                placeholder="e.g. North warehouse"
-                            />
-                        </div>
-                        <div class="grid gap-2">
-                            <Label for="warehouse-code">Code</Label>
-                            <Input
-                                id="warehouse-code"
-                                v-model="warehouseForm.code"
-                                placeholder="Auto-generated if left blank"
-                            />
-                        </div>
-                        <div class="grid gap-2">
-                            <Label for="warehouse-address">Address</Label>
-                            <Input
-                                id="warehouse-address"
-                                v-model="warehouseForm.address"
-                                placeholder="Optional"
-                            />
-                        </div>
-                        <label
-                            class="flex items-center gap-2 text-sm"
-                            for="warehouse-default"
-                        >
-                            <input
-                                id="warehouse-default"
-                                v-model="warehouseForm.isDefault"
-                                type="checkbox"
-                                class="size-4 rounded border"
-                            />
-                            Use as the team's default warehouse
-                        </label>
-                    </div>
-                    <p
-                        v-if="warehouseError"
-                        class="text-xs text-destructive"
-                        role="alert"
-                    >
-                        {{ warehouseError }}
-                    </p>
-                    <DialogFooter class="gap-2">
-                        <Button
-                            type="button"
-                            variant="outline"
-                            @click="warehouseDialogOpen = false"
-                            >Cancel</Button
-                        >
-                        <Button type="submit" :disabled="savingWarehouse">
-                            {{
-                                savingWarehouse
-                                    ? 'Saving…'
-                                    : editingWarehouse
-                                      ? 'Save changes'
-                                      : 'Add warehouse'
-                            }}
-                        </Button>
-                    </DialogFooter>
-                </form>
-            </DialogContent>
-        </Dialog>
+        <WarehouseDialog
+            v-model:open="warehouseDialogOpen"
+            :warehouse="editingWarehouse"
+            :has-warehouses="warehouses.length > 0"
+        />
 
-        <Dialog v-model:open="binDialogOpen">
-            <DialogContent>
-                <form class="space-y-5" @submit.prevent="saveBin">
-                    <DialogHeader>
-                        <DialogTitle>{{
-                            editingBin ? 'Edit bin' : 'Add bin'
-                        }}</DialogTitle>
-                        <DialogDescription>
-                            {{ binWarehouse?.name }} · Bins let you pinpoint
-                            where an item is stored inside the warehouse.
-                        </DialogDescription>
-                    </DialogHeader>
-                    <div class="grid gap-4">
-                        <div class="grid gap-2">
-                            <Label for="bin-name">Name</Label>
-                            <Input
-                                id="bin-name"
-                                v-model="binForm.name"
-                                required
-                                placeholder="e.g. Aisle A · Shelf 2"
-                            />
-                        </div>
-                        <div class="grid gap-2">
-                            <Label for="bin-code">Code</Label>
-                            <Input
-                                id="bin-code"
-                                v-model="binForm.code"
-                                placeholder="Auto-generated if left blank"
-                            />
-                        </div>
-                    </div>
-                    <p
-                        v-if="binError"
-                        class="text-xs text-destructive"
-                        role="alert"
-                    >
-                        {{ binError }}
-                    </p>
-                    <DialogFooter class="gap-2">
-                        <Button
-                            type="button"
-                            variant="outline"
-                            @click="binDialogOpen = false"
-                            >Cancel</Button
-                        >
-                        <Button type="submit" :disabled="savingBin">
-                            {{
-                                savingBin
-                                    ? 'Saving…'
-                                    : editingBin
-                                      ? 'Save changes'
-                                      : 'Add bin'
-                            }}
-                        </Button>
-                    </DialogFooter>
-                </form>
-            </DialogContent>
-        </Dialog>
+        <BinDialog
+            v-model:open="binDialogOpen"
+            :warehouse-id="binWarehouse?.id ?? null"
+            :warehouse-name="binWarehouse?.name"
+            :bin="editingBin"
+        />
 
-        <Dialog v-model:open="deleteDialogOpen">
-            <DialogContent>
-                <DialogHeader>
-                    <DialogTitle>Archive warehouse</DialogTitle>
-                    <DialogDescription>
-                        Archive <strong>{{ deletingWarehouse?.name }}</strong
-                        >? It will no longer appear in inventory screens. A
-                        warehouse can only be archived when it holds no stock.
-                    </DialogDescription>
-                </DialogHeader>
-                <p
-                    v-if="warehouseDeleteError"
-                    class="text-xs text-destructive"
-                    role="alert"
-                >
-                    {{ warehouseDeleteError }}
-                </p>
-                <DialogFooter class="gap-2">
-                    <Button
-                        type="button"
-                        variant="outline"
-                        @click="deleteDialogOpen = false"
-                        >Cancel</Button
-                    >
-                    <Button
-                        type="button"
-                        variant="destructive"
-                        :disabled="removingWarehouse"
-                        @click="confirmDeleteWarehouse"
-                    >
-                        {{ removingWarehouse ? 'Archiving…' : 'Archive' }}
-                    </Button>
-                </DialogFooter>
-            </DialogContent>
-        </Dialog>
+        <ConfirmActionDialog
+            v-model:open="deleteDialogOpen"
+            title="Archive warehouse"
+            confirm-label="Archive"
+            processing-label="Archiving…"
+            :processing="removingWarehouse"
+            :error="warehouseDeleteError"
+            @confirm="confirmDeleteWarehouse"
+        >
+            Archive <strong>{{ deletingWarehouse?.name }}</strong
+            >? It will no longer appear in inventory screens. A warehouse can
+            only be archived when it holds no stock.
+        </ConfirmActionDialog>
 
-        <Dialog v-model:open="deleteBinOpen">
-            <DialogContent>
-                <DialogHeader>
-                    <DialogTitle>Remove bin</DialogTitle>
-                    <DialogDescription>
-                        Remove <strong>{{ deletingBin?.name }}</strong
-                        >? A bin can only be removed when it holds no stock.
-                    </DialogDescription>
-                </DialogHeader>
-                <p
-                    v-if="binDeleteError"
-                    class="text-xs text-destructive"
-                    role="alert"
-                >
-                    {{ binDeleteError }}
-                </p>
-                <DialogFooter class="gap-2">
-                    <Button
-                        type="button"
-                        variant="outline"
-                        @click="deleteBinOpen = false"
-                        >Cancel</Button
-                    >
-                    <Button
-                        type="button"
-                        variant="destructive"
-                        :disabled="removingBin"
-                        @click="confirmDeleteBin"
-                    >
-                        {{ removingBin ? 'Removing…' : 'Remove bin' }}
-                    </Button>
-                </DialogFooter>
-            </DialogContent>
-        </Dialog>
+        <ConfirmActionDialog
+            v-model:open="deleteBinOpen"
+            title="Remove bin"
+            confirm-label="Remove bin"
+            processing-label="Removing…"
+            :processing="removingBin"
+            :error="binDeleteError"
+            @confirm="confirmDeleteBin"
+        >
+            Remove <strong>{{ deletingBin?.name }}</strong
+            >? A bin can only be removed when it holds no stock.
+        </ConfirmActionDialog>
     </main>
 </template>

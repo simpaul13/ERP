@@ -7,6 +7,8 @@ import {
     ChevronLeft,
     ChevronRight,
     Download,
+    EllipsisVertical,
+    Eye,
     History,
     Image,
     ImagePlus,
@@ -31,6 +33,13 @@ import {
     DialogHeader,
     DialogTitle,
 } from '@/components/ui/dialog';
+import {
+    DropdownMenu,
+    DropdownMenuContent,
+    DropdownMenuItem,
+    DropdownMenuSeparator,
+    DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 
@@ -182,7 +191,9 @@ function defaultBinId(warehouseId: number | null): number | null {
         return null;
     }
 
-    const warehouse = warehouses.value.find((entry) => entry.id === warehouseId);
+    const warehouse = warehouses.value.find(
+        (entry) => entry.id === warehouseId,
+    );
 
     return (
         warehouse?.locations.find((location) => location.isDefault)?.id ??
@@ -298,7 +309,9 @@ watch(adjustmentWarehouseId, (warehouseId) => {
 });
 
 const adjustmentWarehouse = computed<WarehouseOption | undefined>(() =>
-    warehouses.value.find((warehouse) => warehouse.id === adjustmentWarehouseId.value),
+    warehouses.value.find(
+        (warehouse) => warehouse.id === adjustmentWarehouseId.value,
+    ),
 );
 
 const adjustmentLocations = computed<WarehouseBin[]>(
@@ -330,6 +343,12 @@ function currentTeamSlug(): string | null {
     const team = page.props.currentTeam as { slug: string } | null | undefined;
 
     return team?.slug ?? null;
+}
+
+function showUrl(item: InventoryItem): string {
+    const slug = currentTeamSlug();
+
+    return slug ? `/${slug}/inventories/${item.id}` : `/inventories/${item.id}`;
 }
 
 function applyFilters(): void {
@@ -429,6 +448,14 @@ function stockedIn(item: InventoryItem): string {
 
 function mainImage(item: InventoryItem): ProductImage | undefined {
     return item.images.find((image) => image.id === item.mainImageId);
+}
+
+/**
+ * Row menus hand focus back to their trigger while closing, which would steal
+ * focus from a dialog opened in the same tick. Defer until the menu is gone.
+ */
+function runRowAction(action: () => void): void {
+    requestAnimationFrame(action);
 }
 
 function addItem(): void {
@@ -1056,7 +1083,11 @@ defineOptions({
                 min-width="850px"
             >
                 <template #cell-product="{ item }">
-                    <div class="flex items-center gap-3">
+                    <Link
+                        :href="showUrl(item)"
+                        class="group flex items-center gap-3"
+                        :aria-label="`View ${item.name}`"
+                    >
                         <div
                             class="flex size-11 shrink-0 items-center justify-center overflow-hidden rounded-md border bg-muted/30"
                         >
@@ -1072,7 +1103,11 @@ defineOptions({
                             />
                         </div>
                         <div class="min-w-0">
-                            <p class="truncate font-medium">{{ item.name }}</p>
+                            <p
+                                class="truncate font-medium group-hover:underline"
+                            >
+                                {{ item.name }}
+                            </p>
                             <p
                                 class="mt-0.5 font-mono text-xs text-muted-foreground"
                             >
@@ -1085,7 +1120,7 @@ defineOptions({
                                 </span>
                             </p>
                         </div>
-                    </div>
+                    </Link>
                 </template>
                 <template #cell-category="{ item }">
                     <span class="text-muted-foreground">{{
@@ -1127,62 +1162,89 @@ defineOptions({
                 <template #cell-actions="{ item }">
                     <div class="flex items-center justify-end gap-1">
                         <Button
+                            as-child
                             variant="ghost"
                             size="icon"
                             class="size-8"
-                            :aria-label="`View stock history for ${item.name}`"
-                            @click="openMovements(item)"
                         >
-                            <History class="size-4" />
+                            <Link
+                                :href="showUrl(item)"
+                                :aria-label="`View details for ${item.name}`"
+                            >
+                                <Eye class="size-4" />
+                            </Link>
                         </Button>
-                        <template v-if="canManage">
-                            <Button
-                                variant="ghost"
-                                size="icon"
-                                class="size-8"
-                                :aria-label="`Manage product images for ${item.name}`"
-                                @click="openPhotoEditor(item)"
-                            >
-                                <Image class="size-4" />
-                            </Button>
-                            <Button
-                                variant="ghost"
-                                size="icon"
-                                class="size-8"
-                                :aria-label="`Receive stock for ${item.name}`"
-                                @click="openAdjustment(item, 'receive')"
-                            >
-                                <ArrowDownToLine class="size-4" />
-                            </Button>
-                            <Button
-                                variant="ghost"
-                                size="icon"
-                                class="size-8"
-                                :aria-label="`Remove stock for ${item.name}`"
-                                :disabled="item.quantity === 0"
-                                @click="openAdjustment(item, 'remove')"
-                            >
-                                <ArrowUpFromLine class="size-4" />
-                            </Button>
-                            <Button
-                                variant="ghost"
-                                size="icon"
-                                class="size-8"
-                                :aria-label="`Edit ${item.name}`"
-                                @click="openEdit(item)"
-                            >
-                                <Pencil class="size-4" />
-                            </Button>
-                            <Button
-                                variant="ghost"
-                                size="icon"
-                                class="size-8 text-muted-foreground hover:text-destructive"
-                                :aria-label="`Delete ${item.name}`"
-                                @click="openDelete(item)"
-                            >
-                                <Trash2 class="size-4" />
-                            </Button>
-                        </template>
+                        <DropdownMenu>
+                            <DropdownMenuTrigger as-child>
+                                <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    class="size-8"
+                                    :aria-label="`More actions for ${item.name}`"
+                                >
+                                    <EllipsisVertical class="size-4" />
+                                </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end" class="w-48">
+                                <DropdownMenuItem
+                                    @select="
+                                        runRowAction(() => openMovements(item))
+                                    "
+                                >
+                                    <History class="size-4" /> Stock history
+                                </DropdownMenuItem>
+                                <template v-if="canManage">
+                                    <DropdownMenuSeparator />
+                                    <DropdownMenuItem
+                                        @select="
+                                            runRowAction(() =>
+                                                openAdjustment(item, 'receive'),
+                                            )
+                                        "
+                                    >
+                                        <ArrowDownToLine class="size-4" />
+                                        Receive stock
+                                    </DropdownMenuItem>
+                                    <DropdownMenuItem
+                                        :disabled="item.quantity === 0"
+                                        @select="
+                                            runRowAction(() =>
+                                                openAdjustment(item, 'remove'),
+                                            )
+                                        "
+                                    >
+                                        <ArrowUpFromLine class="size-4" />
+                                        Remove stock
+                                    </DropdownMenuItem>
+                                    <DropdownMenuSeparator />
+                                    <DropdownMenuItem
+                                        @select="
+                                            runRowAction(() =>
+                                                openPhotoEditor(item),
+                                            )
+                                        "
+                                    >
+                                        <Image class="size-4" /> Manage photos
+                                    </DropdownMenuItem>
+                                    <DropdownMenuItem
+                                        @select="
+                                            runRowAction(() => openEdit(item))
+                                        "
+                                    >
+                                        <Pencil class="size-4" /> Edit item
+                                    </DropdownMenuItem>
+                                    <DropdownMenuSeparator />
+                                    <DropdownMenuItem
+                                        variant="destructive"
+                                        @select="
+                                            runRowAction(() => openDelete(item))
+                                        "
+                                    >
+                                        <Trash2 class="size-4" /> Delete item
+                                    </DropdownMenuItem>
+                                </template>
+                            </DropdownMenuContent>
+                        </DropdownMenu>
                     </div>
                 </template>
                 <template #empty>
@@ -1223,114 +1285,169 @@ defineOptions({
         </section>
 
         <Dialog v-model:open="dialogOpen">
-            <DialogContent>
-                <form class="space-y-5" @submit.prevent="addItem">
-                    <DialogHeader>
+            <DialogContent class="sm:max-w-2xl">
+                <form
+                    class="grid max-h-[85vh] gap-6 overflow-y-auto"
+                    @submit.prevent="addItem"
+                >
+                    <DialogHeader class="text-left">
                         <DialogTitle>Add inventory item</DialogTitle>
                         <DialogDescription
                             >Create a product record for this inventory
                             view.</DialogDescription
                         >
                     </DialogHeader>
-                    <div class="grid gap-4 sm:grid-cols-2">
-                        <div class="grid gap-2 sm:col-span-2">
-                            <Label for="item-name">Product name</Label
-                            ><Input
-                                id="item-name"
-                                v-model="newItem.name"
-                                required
-                                placeholder="e.g. Shipping carton · Large"
-                            />
-                        </div>
-                        <div class="grid gap-2">
-                            <Label for="item-sku">SKU</Label
-                            ><Input
-                                id="item-sku"
-                                v-model="newItem.sku"
-                                required
-                                placeholder="e.g. BX-2048"
-                            />
-                        </div>
-                        <div class="grid gap-2">
-                            <Label for="item-category">Category</Label
-                            ><Input
-                                id="item-category"
-                                v-model="newItem.category"
-                                placeholder="Packaging"
-                            />
-                        </div>
-                        <div class="grid gap-2">
-                            <Label for="item-warehouse">Warehouse</Label>
-                            <select
-                                id="item-warehouse"
-                                v-model.number="newItem.warehouseId"
-                                required
-                                class="h-9 rounded-md border bg-background px-3 text-sm focus-visible:ring-2 focus-visible:ring-ring"
+                    <section
+                        class="grid gap-4"
+                        aria-labelledby="new-item-details-heading"
+                    >
+                        <div>
+                            <h3
+                                id="new-item-details-heading"
+                                class="text-sm font-medium"
                             >
-                                <option
-                                    v-for="warehouse in warehouses"
-                                    :key="warehouse.id"
-                                    :value="warehouse.id"
-                                >
-                                    {{ warehouse.name }}
-                                </option>
-                            </select>
-                        </div>
-                        <div class="grid gap-2">
-                            <Label for="item-bin">Bin (optional)</Label>
-                            <select
-                                id="item-bin"
-                                v-model.number="newItem.warehouseLocationId"
-                                class="h-9 rounded-md border bg-background px-3 text-sm focus-visible:ring-2 focus-visible:ring-ring"
-                            >
-                                <option :value="null">Default bin</option>
-                                <option
-                                    v-for="bin in warehouses.find(
-                                        (warehouse) =>
-                                            warehouse.id ===
-                                            newItem.warehouseId,
-                                    )?.locations ?? []"
-                                    :key="bin.id"
-                                    :value="bin.id"
-                                >
-                                    {{ bin.name }} · {{ bin.code }}
-                                </option>
-                            </select>
-                        </div>
-                        <div class="grid gap-2">
-                            <Label for="item-quantity">Opening quantity</Label
-                            ><Input
-                                id="item-quantity"
-                                v-model.number="newItem.quantity"
-                                type="number"
-                                min="0"
-                            />
-                            <p class="text-xs text-muted-foreground">
-                                Saved as an opening balance movement.
+                                Product details
+                            </h3>
+                            <p class="mt-1 text-xs text-muted-foreground">
+                                How this item is identified in your catalog.
                             </p>
                         </div>
-                        <div class="grid gap-2">
-                            <Label for="item-reorder">Reorder point</Label
-                            ><Input
-                                id="item-reorder"
-                                v-model.number="newItem.reorderPoint"
-                                type="number"
-                                min="0"
-                            />
+                        <div class="grid gap-x-4 gap-y-5 sm:grid-cols-2">
+                            <div class="grid gap-2 sm:col-span-2">
+                                <Label for="item-name">Product name</Label>
+                                <Input
+                                    id="item-name"
+                                    v-model="newItem.name"
+                                    required
+                                    placeholder="e.g. Shipping carton · Large"
+                                />
+                            </div>
+                            <div class="grid gap-2">
+                                <Label for="item-sku">SKU</Label>
+                                <Input
+                                    id="item-sku"
+                                    v-model="newItem.sku"
+                                    required
+                                    placeholder="e.g. BX-2048"
+                                />
+                            </div>
+                            <div class="grid gap-2">
+                                <Label for="item-category">Category</Label>
+                                <Input
+                                    id="item-category"
+                                    v-model="newItem.category"
+                                    placeholder="Packaging"
+                                />
+                            </div>
                         </div>
-                        <div class="grid gap-2">
-                            <Label for="item-cost">Unit cost</Label
-                            ><Input
-                                id="item-cost"
-                                v-model.number="newItem.unitCost"
-                                type="number"
-                                min="0"
-                                step="0.01"
-                            />
-                        </div>
-                    </div>
+                    </section>
                     <section
-                        class="space-y-3 border-t pt-4"
+                        class="grid gap-4 border-t pt-5"
+                        aria-labelledby="new-item-storage-heading"
+                    >
+                        <div>
+                            <h3
+                                id="new-item-storage-heading"
+                                class="text-sm font-medium"
+                            >
+                                Storage
+                            </h3>
+                            <p class="mt-1 text-xs text-muted-foreground">
+                                Where this item is held and picked from.
+                            </p>
+                        </div>
+                        <div class="grid gap-x-4 gap-y-5 sm:grid-cols-2">
+                            <div class="grid gap-2">
+                                <Label for="item-warehouse">Warehouse</Label>
+                                <select
+                                    id="item-warehouse"
+                                    v-model.number="newItem.warehouseId"
+                                    required
+                                    class="h-9 rounded-md border bg-background px-3 text-sm focus-visible:ring-2 focus-visible:ring-ring"
+                                >
+                                    <option
+                                        v-for="warehouse in warehouses"
+                                        :key="warehouse.id"
+                                        :value="warehouse.id"
+                                    >
+                                        {{ warehouse.name }}
+                                    </option>
+                                </select>
+                            </div>
+                            <div class="grid gap-2">
+                                <Label for="item-bin">Bin (optional)</Label>
+                                <select
+                                    id="item-bin"
+                                    v-model.number="newItem.warehouseLocationId"
+                                    class="h-9 rounded-md border bg-background px-3 text-sm focus-visible:ring-2 focus-visible:ring-ring"
+                                >
+                                    <option :value="null">Default bin</option>
+                                    <option
+                                        v-for="bin in warehouses.find(
+                                            (warehouse) =>
+                                                warehouse.id ===
+                                                newItem.warehouseId,
+                                        )?.locations ?? []"
+                                        :key="bin.id"
+                                        :value="bin.id"
+                                    >
+                                        {{ bin.name }} · {{ bin.code }}
+                                    </option>
+                                </select>
+                            </div>
+                        </div>
+                    </section>
+                    <section
+                        class="grid gap-4 border-t pt-5"
+                        aria-labelledby="new-item-stock-heading"
+                    >
+                        <div>
+                            <h3
+                                id="new-item-stock-heading"
+                                class="text-sm font-medium"
+                            >
+                                Stock and pricing
+                            </h3>
+                            <p class="mt-1 text-xs text-muted-foreground">
+                                Opening quantity is saved as an opening balance
+                                movement.
+                            </p>
+                        </div>
+                        <div class="grid gap-x-4 gap-y-5 sm:grid-cols-3">
+                            <div class="grid gap-2">
+                                <Label for="item-quantity"
+                                    >Opening quantity</Label
+                                >
+                                <Input
+                                    id="item-quantity"
+                                    v-model.number="newItem.quantity"
+                                    type="number"
+                                    min="0"
+                                />
+                            </div>
+                            <div class="grid gap-2">
+                                <Label for="item-reorder">Reorder point</Label>
+                                <Input
+                                    id="item-reorder"
+                                    v-model.number="newItem.reorderPoint"
+                                    type="number"
+                                    min="0"
+                                />
+                            </div>
+                            <div class="grid gap-2">
+                                <Label for="item-cost">Unit cost</Label>
+                                <Input
+                                    id="item-cost"
+                                    v-model.number="newItem.unitCost"
+                                    type="number"
+                                    min="0"
+                                    step="0.01"
+                                />
+                            </div>
+                        </div>
+                    </section>
+                    <section
+                        class="space-y-4 border-t pt-5"
                         aria-labelledby="new-item-images-heading"
                     >
                         <div class="flex items-start justify-between gap-4">
@@ -1829,9 +1946,9 @@ defineOptions({
                             </select>
                             <p class="text-xs text-muted-foreground">
                                 Available in this bin:
-                                <span class="tabular-nums"
-                                    >{{ adjustmentAvailable }}</span
-                                >
+                                <span class="tabular-nums">{{
+                                    adjustmentAvailable
+                                }}</span>
                                 units
                             </p>
                         </div>
@@ -1933,7 +2050,9 @@ defineOptions({
                     >
                         <div class="flex items-start justify-between gap-3">
                             <div class="min-w-0">
-                                <p class="flex flex-wrap items-center gap-2 text-sm font-medium">
+                                <p
+                                    class="flex flex-wrap items-center gap-2 text-sm font-medium"
+                                >
                                     {{ movement.typeLabel }}
                                     <span
                                         class="tabular-nums"
