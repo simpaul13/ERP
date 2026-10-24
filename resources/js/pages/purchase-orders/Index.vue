@@ -563,16 +563,16 @@ function statusVariant(
                         <div
                             v-for="(line, index) in form.items"
                             :key="index"
-                            class="grid gap-3 rounded-md border p-3 sm:grid-cols-[minmax(0,1fr)_100px_130px_auto] sm:items-end"
+                            class="grid min-w-0 gap-3 rounded-md border p-3 sm:grid-cols-[minmax(0,1fr)_100px_130px_auto] sm:items-end"
                         >
-                            <div class="grid gap-2">
+                            <div class="grid min-w-0 gap-2">
                                 <Label :for="`po-item-${index}`"
                                     >Inventory item</Label
                                 ><select
                                     :id="`po-item-${index}`"
                                     v-model="line.inventory_item_id"
                                     required
-                                    class="h-9 rounded-md border bg-background px-3 text-sm"
+                                    class="h-9 w-full max-w-full min-w-0 rounded-md border bg-background px-3 text-sm"
                                     @change="updateDraftItem(index)"
                                 >
                                     <option value="" disabled>
