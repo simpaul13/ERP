@@ -29,6 +29,7 @@ use Illuminate\Support\Carbon;
  * @property-read Collection<int, Warehouse> $warehouses
  * @property-read Collection<int, StockMovement> $stockMovements
  * @property-read Collection<int, Supplier> $suppliers
+ * @property-read Collection<int, PurchaseOrder> $purchaseOrders
  */
 #[Fillable(['name', 'slug', 'is_personal'])]
 class Team extends Model
@@ -145,6 +146,16 @@ class Team extends Model
     public function suppliers(): HasMany
     {
         return $this->hasMany(Supplier::class);
+    }
+
+    /**
+     * Get the purchase orders that belong to this team.
+     *
+     * @return HasMany<PurchaseOrder, $this>
+     */
+    public function purchaseOrders(): HasMany
+    {
+        return $this->hasMany(PurchaseOrder::class);
     }
 
     /**

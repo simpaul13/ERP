@@ -1,5 +1,6 @@
 <?php
 
+use App\Enums\PurchaseOrderStatus;
 use App\Enums\TeamRole;
 use App\Models\Supplier;
 use App\Models\Team;
@@ -148,4 +149,52 @@ test('supplier records are scoped to their owning team', function () {
 
     expect($team->suppliers()->whereKey($supplier->id)->exists())->toBeTrue()
         ->and($supplier->team->is($team))->toBeTrue();
+});
+
+test('a supplier with an open purchase order cannot be archived', function () {
+    $user = User::factory()->create();
+    $team = $user->personalTeam();
+    $supplier = $team->suppliers()->create(['name' => 'Active order supplier']);
+    $supplier->purchaseOrders()->create([
+        'team_id' => $team->id,
+        'created_by' => $user->id,
+        'status' => PurchaseOrderStatus::PartiallyReceived,
+        'expected_date' => now()->addWeek()->toDateString(),
+    ]);
+    $indexUrl = route('suppliers.index', ['current_team' => $team->slug]);
+
+    $this->actingAs($user)
+        ->from($indexUrl)
+        ->delete(route('suppliers.destroy', [
+            'current_team' => $team->slug,
+            'supplier' => $supplier->id,
+        ]))
+        ->assertRedirect($indexUrl);
+
+    expect($supplier->fresh()->trashed())->toBeFalse()
+        ->and($team->purchaseOrders()->where('supplier_id', $supplier->id)->exists())->toBeTrue();
+});
+
+test('a supplier can be archived when its linked purchase orders are complete or cancelled', function () {
+    $user = User::factory()->create();
+    $team = $user->personalTeam();
+    $supplier = $team->suppliers()->create(['name' => 'Completed order supplier']);
+
+    foreach ([PurchaseOrderStatus::Received, PurchaseOrderStatus::Cancelled] as $status) {
+        $supplier->purchaseOrders()->create([
+            'team_id' => $team->id,
+            'created_by' => $user->id,
+            'status' => $status,
+            'expected_date' => now()->addWeek()->toDateString(),
+        ]);
+    }
+
+    $this->actingAs($user)
+        ->delete(route('suppliers.destroy', [
+            'current_team' => $team->slug,
+            'supplier' => $supplier->id,
+        ]))
+        ->assertRedirect(route('suppliers.index', ['current_team' => $team->slug]));
+
+    $this->assertSoftDeleted('suppliers', ['id' => $supplier->id]);
 });

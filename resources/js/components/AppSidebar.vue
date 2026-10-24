@@ -67,6 +67,13 @@ const mainNavItems = computed<NavItem[]>(() => [
             : '/suppliers',
         icon: Truck,
     },
+    {
+        title: 'Purchase orders',
+        href: page.props.currentTeam
+            ? `/${page.props.currentTeam.slug}/purchase-orders`
+            : '/purchase-orders',
+        icon: ShoppingCart,
+    },
 ]);
 </script>
 

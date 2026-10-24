@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Suppliers;
 
+use App\Enums\PurchaseOrderStatus;
 use App\Http\Controllers\Controller;
 use App\Models\Supplier;
 use Illuminate\Http\RedirectResponse;
@@ -86,6 +87,22 @@ class SupplierController extends Controller
         $supplier = $team->suppliers()->findOrFail($supplier->id);
 
         Gate::authorize('delete', $supplier);
+
+        $hasOpenPurchaseOrders = $supplier->purchaseOrders()
+            ->whereNotIn('status', [
+                PurchaseOrderStatus::Received->value,
+                PurchaseOrderStatus::Cancelled->value,
+            ])
+            ->exists();
+
+        if ($hasOpenPurchaseOrders) {
+            Inertia::flash('toast', [
+                'type' => 'error',
+                'message' => __('This supplier has open purchase orders and cannot be archived.'),
+            ]);
+
+            return back();
+        }
 
         $supplier->delete();
 
