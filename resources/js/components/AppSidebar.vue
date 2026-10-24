@@ -1,6 +1,14 @@
 <script setup lang="ts">
 import { Link, usePage } from '@inertiajs/vue3';
-import { Boxes, LayoutGrid, Warehouse } from '@lucide/vue';
+import {
+    BadgeDollarSign,
+    Boxes,
+    ChartNoAxesCombined,
+    LayoutGrid,
+    ReceiptText,
+    ShoppingCart,
+    Warehouse,
+} from '@lucide/vue';
 import { computed } from 'vue';
 import AppLogo from '@/components/AppLogo.vue';
 import NavMain from '@/components/NavMain.vue';
@@ -19,6 +27,13 @@ import { dashboard } from '@/routes';
 import type { NavItem } from '@/types';
 
 const page = usePage();
+
+const modules = [
+    { title: 'Purchasing', icon: ShoppingCart },
+    { title: 'Sales', icon: ReceiptText },
+    { title: 'Finance', icon: BadgeDollarSign },
+    { title: 'Reports & Operations', icon: ChartNoAxesCombined },
+];
 
 const dashboardUrl = computed(() =>
     page.props.currentTeam ? dashboard(page.props.currentTeam.slug).url : '/',
@@ -67,7 +82,7 @@ const mainNavItems = computed<NavItem[]>(() => [
         </SidebarHeader>
 
         <SidebarContent>
-            <NavMain :items="mainNavItems" />
+            <NavMain :items="mainNavItems" :modules="modules" />
         </SidebarContent>
 
         <SidebarFooter>

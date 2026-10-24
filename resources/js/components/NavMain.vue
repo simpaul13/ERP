@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { Link } from '@inertiajs/vue3';
+import type { LucideIcon } from '@lucide/vue';
 import {
     SidebarGroup,
     SidebarGroupLabel,
@@ -12,6 +13,7 @@ import type { NavItem } from '@/types';
 
 defineProps<{
     items: NavItem[];
+    modules: { title: string; icon: LucideIcon }[];
 }>();
 
 const { isCurrentUrl } = useCurrentUrl();
@@ -31,6 +33,12 @@ const { isCurrentUrl } = useCurrentUrl();
                         <component :is="item.icon" />
                         <span>{{ item.title }}</span>
                     </Link>
+                </SidebarMenuButton>
+            </SidebarMenuItem>
+            <SidebarMenuItem v-for="module in modules" :key="module.title">
+                <SidebarMenuButton as="div" class="pointer-events-none">
+                    <component :is="module.icon" aria-hidden="true" />
+                    <span>{{ module.title }}</span>
                 </SidebarMenuButton>
             </SidebarMenuItem>
         </SidebarMenu>
