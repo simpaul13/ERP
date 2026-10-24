@@ -4,6 +4,7 @@ use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\Inventories\InventoryController;
 use App\Http\Controllers\Inventories\WarehouseController;
 use App\Http\Controllers\Inventories\WarehouseLocationController;
+use App\Http\Controllers\Suppliers\SupplierController;
 use App\Http\Controllers\Teams\TeamInvitationController;
 use App\Http\Middleware\EnsureTeamMembership;
 use Illuminate\Support\Facades\Route;
@@ -14,6 +15,10 @@ Route::prefix('{current_team}')
     ->middleware(['auth', 'verified', EnsureTeamMembership::class])
     ->group(function () {
         Route::get('dashboard', DashboardController::class)->name('dashboard');
+        Route::get('suppliers', [SupplierController::class, 'index'])->name('suppliers.index');
+        Route::post('suppliers', [SupplierController::class, 'store'])->name('suppliers.store');
+        Route::patch('suppliers/{supplier}', [SupplierController::class, 'update'])->name('suppliers.update');
+        Route::delete('suppliers/{supplier}', [SupplierController::class, 'destroy'])->name('suppliers.destroy');
         Route::get('inventories', [InventoryController::class, 'index'])->name('inventories.index');
         Route::get('inventories/{inventoryItem}', [InventoryController::class, 'show'])->name('inventories.show');
         Route::post('inventories', [InventoryController::class, 'store'])->name('inventories.store');

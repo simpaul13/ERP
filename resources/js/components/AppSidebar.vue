@@ -7,6 +7,7 @@ import {
     LayoutGrid,
     ReceiptText,
     ShoppingCart,
+    Truck,
     Warehouse,
 } from '@lucide/vue';
 import { computed } from 'vue';
@@ -58,6 +59,13 @@ const mainNavItems = computed<NavItem[]>(() => [
             ? `/${page.props.currentTeam.slug}/warehouses`
             : '/warehouses',
         icon: Warehouse,
+    },
+    {
+        title: 'Suppliers',
+        href: page.props.currentTeam
+            ? `/${page.props.currentTeam.slug}/suppliers`
+            : '/suppliers',
+        icon: Truck,
     },
 ]);
 </script>
