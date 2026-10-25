@@ -228,7 +228,7 @@ class PurchaseOrderController extends Controller
             $warehouse = $team->warehouses()->findOrFail($validated['warehouse_id']);
             $location = $warehouse->locations()->findOrFail($validated['warehouse_location_id']);
 
-            $recordStockMovement->handle(
+            $movement = $recordStockMovement->handle(
                 team: $team,
                 inventoryItem: $inventoryItem,
                 warehouse: $warehouse,
@@ -240,6 +240,7 @@ class PurchaseOrderController extends Controller
                 reason: 'Received against purchase order '.$lockedOrder->number(),
                 user: $request->user(),
             );
+            $movement->update(['purchase_order_item_id' => $line->id]);
 
             $line->increment('received_quantity', $quantity);
             $allReceived = ! $lockedOrder->items()

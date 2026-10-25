@@ -3,6 +3,7 @@
 use App\Enums\PurchaseOrderStatus;
 use App\Enums\TeamRole;
 use App\Models\PurchaseOrder;
+use App\Models\StockLevel;
 use App\Models\StockMovement;
 use App\Models\Team;
 use App\Models\User;
@@ -73,16 +74,28 @@ test('a team member can create and submit a purchase order and admins can approv
         ->post($receiptUrl, [...$receiptData, 'quantity' => 2])
         ->assertRedirect($indexUrl);
 
+    $partialMovement = StockMovement::query()->where('inventory_item_id', $item->id)->sole();
     expect($order->fresh()->status)->toBe(PurchaseOrderStatus::PartiallyReceived)
         ->and($order->items()->sole()->received_quantity)->toBe(2)
-        ->and($item->fresh()->quantity)->toBe(2);
+        ->and($item->fresh()->quantity)->toBe(2)
+        ->and($partialMovement->quantity)->toBe(2)
+        ->and($partialMovement->purchase_order_item_id)->toBe($order->items()->sole()->id)
+        ->and($partialMovement->warehouse_id)->toBe($warehouse->id)
+        ->and($partialMovement->warehouse_location_id)->toBe($location->id)
+        ->and($partialMovement->user_id)->toBe($owner->id)
+        ->and($partialMovement->reference)->toBe($order->number())
+        ->and($partialMovement->created_at)->not->toBeNull()
+        ->and(StockLevel::query()->where('inventory_item_id', $item->id)->value('quantity'))->toBe(2);
 
     $this->actingAs($owner)
         ->post($receiptUrl, [...$receiptData, 'quantity' => 4])
         ->assertSessionHasErrors('quantity');
 
-    expect($order->items()->sole()->received_quantity)->toBe(2)
-        ->and($item->fresh()->quantity)->toBe(2);
+    expect($order->fresh()->status)->toBe(PurchaseOrderStatus::PartiallyReceived)
+        ->and($order->items()->sole()->received_quantity)->toBe(2)
+        ->and($item->fresh()->quantity)->toBe(2)
+        ->and(StockLevel::query()->where('inventory_item_id', $item->id)->value('quantity'))->toBe(2)
+        ->and(StockMovement::query()->where('inventory_item_id', $item->id)->count())->toBe(1);
 
     $this->actingAs($owner)
         ->post($receiptUrl, [...$receiptData, 'quantity' => 3])
@@ -92,6 +105,7 @@ test('a team member can create and submit a purchase order and admins can approv
         ->and($order->items()->sole()->received_quantity)->toBe(5)
         ->and($item->fresh()->quantity)->toBe(5)
         ->and(StockMovement::query()->where('inventory_item_id', $item->id)->where('type', 'receipt')->count())->toBe(2)
+        ->and(StockMovement::query()->where('inventory_item_id', $item->id)->where('purchase_order_item_id', $order->items()->sole()->id)->count())->toBe(2)
         ->and($order->events()->count())->toBe(5);
 
     $this->actingAs($member)
@@ -173,7 +187,10 @@ test('admins can return received goods with an audited movement and cannot retur
     $returnUrl = route('purchase-orders.return', ['current_team' => $team->slug, 'purchaseOrder' => $order->id]);
 
     $this->actingAs($owner)->from($indexUrl)->post($returnUrl, $returnData)->assertRedirect($indexUrl);
-    $movement = StockMovement::query()->where('purchase_order_item_id', $line->id)->sole();
+    $movement = StockMovement::query()
+        ->where('purchase_order_item_id', $line->id)
+        ->where('type', 'issue')
+        ->sole();
     expect($movement->type->value)->toBe('issue')
         ->and($movement->quantity)->toBe(-2)
         ->and($movement->reference)->toBe($order->number())
@@ -187,7 +204,8 @@ test('admins can return received goods with an audited movement and cannot retur
         ->post($returnUrl, [...$returnData, 'quantity' => 2])
         ->assertSessionHasErrors('quantity');
 
-    expect(StockMovement::query()->where('purchase_order_item_id', $line->id)->count())->toBe(1)
+    expect(StockMovement::query()->where('purchase_order_item_id', $line->id)->count())->toBe(2)
+        ->and(StockMovement::query()->where('purchase_order_item_id', $line->id)->where('type', 'issue')->count())->toBe(1)
         ->and($item->fresh()->quantity)->toBe(1);
 });
 

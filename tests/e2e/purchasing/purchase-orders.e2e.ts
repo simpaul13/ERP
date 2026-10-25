@@ -99,13 +99,26 @@ describe('purchase order workflow', () => {
             await expect(
                 screen.getByRole('dialog', `Receive ${itemName}`),
             ).toBeVisible();
-            await screen.getByLabel('Quantity received').fill('8');
+            await screen.getByLabel('Warehouse').selectOption({ index: 0 });
+            await screen.getByLabel('Bin').selectOption({ index: 0 });
+            await screen.getByLabel('Quantity received').fill('3');
+            await screen.getByRole('button', 'Record receipt').tap();
+
+            await expect(orderCard).toContainText('Partially received');
+            await expect(orderCard).toContainText('3 / 8');
+
+            await orderCard.getByRole('button', 'Receive').tap();
+            await expect(
+                screen.getByRole('dialog', `Receive ${itemName}`),
+            ).toBeVisible();
+            await screen.getByLabel('Quantity received').fill('5');
             await screen.getByRole('button', 'Record receipt').tap();
 
             await expect(orderCard).toContainText('Received');
             await expect(orderCard).toContainText('8 / 8');
-            await orderCard.getByText('Order history (4)').tap();
-            await expect(orderCard).toContainText(`Received 8 × ${itemName}`);
+            await orderCard.getByText('Order history (5)').tap();
+            await expect(orderCard).toContainText(`Received 3 × ${itemName}`);
+            await expect(orderCard).toContainText(`Received 5 × ${itemName}`);
 
             await orderCard.getByRole('button', 'Return').tap();
             await expect(
