@@ -74,6 +74,68 @@ describe('inventory module', () => {
     );
 
     test(
+        'paginates products in a warehouse',
+        { session: 'inventory-user' },
+        async ({ screen }) => {
+            const suffix = Date.now();
+
+            for (let index = 1; index <= 11; index++) {
+                const sku = `E2E-PAGE-${suffix}-${String(index).padStart(2, '0')}`;
+
+                await createInventoryItem(
+                    screen,
+                    sku,
+                    `Pagination product ${index} ${suffix}`,
+                    1,
+                );
+            }
+
+            await screen.getByRole('link', 'Warehouses').tap();
+            await screen.getByRole('link', 'Main warehouse').tap();
+
+            await expect(
+                screen.getByText(/Showing 1 to 10 of .* products/),
+            ).toBeVisible();
+            await screen.getByRole('button', 'Next').tap();
+            await expect(
+                screen.getByText(/Showing 11 to .* of .* products/),
+            ).toBeVisible();
+
+            const productSku = `E2E-PAGE-${suffix}-05`;
+            await screen
+                .getByLabel('Search warehouse products')
+                .fill(productSku);
+            await expect(
+                screen.getByText(/Showing 1 to 1 of 1 products/),
+            ).toBeVisible();
+            await expect(
+                screen
+                    .getByRole('table', 'Products stocked in this warehouse')
+                    .getByText(productSku),
+            ).toBeVisible();
+
+            await expect(
+                screen.getByText(/Showing 1 to 10 of .* movements/),
+            ).toBeVisible();
+            await screen.getByRole('button', 'Next').last().tap();
+            await expect(
+                screen.getByText(/Showing 11 to .* of .* movements/),
+            ).toBeVisible();
+
+            const movementSku = `E2E-PAGE-${suffix}-05`;
+            await screen.getByLabel('Search movements').fill(movementSku);
+            await expect(
+                screen.getByText(/Showing 1 to 1 of 1 movements/),
+            ).toBeVisible();
+            await expect(
+                screen
+                    .getByRole('table', 'Recent stock movements')
+                    .getByText(movementSku),
+            ).toBeVisible();
+        },
+    );
+
+    test(
         'updates stock for an inventory item',
         { session: 'inventory-user' },
         async ({ screen }) => {

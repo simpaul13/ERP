@@ -11,6 +11,7 @@ use App\Models\Warehouse;
 use App\Models\WarehouseLocation;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
@@ -93,18 +94,51 @@ class WarehouseController extends Controller
             ])
             ->values();
 
+        $warehouseItemTotals = $warehouse->stockLevels()
+            ->where('quantity', '>', 0)
+            ->select('inventory_item_id')
+            ->selectRaw('SUM(quantity) as quantity')
+            ->groupBy('inventory_item_id');
+
+        $summary = DB::query()
+            ->fromSub($warehouseItemTotals, 'warehouse_item_totals')
+            ->join('inventory_items', 'inventory_items.id', '=', 'warehouse_item_totals.inventory_item_id')
+            ->selectRaw('COUNT(*) as stocked_items')
+            ->selectRaw('SUM(warehouse_item_totals.quantity) as total_units')
+            ->selectRaw('SUM(CASE WHEN warehouse_item_totals.quantity <= inventory_items.reorder_point THEN 1 ELSE 0 END) as low_stock_items')
+            ->selectRaw('SUM(warehouse_item_totals.quantity * inventory_items.unit_cost) as inventory_value')
+            ->first();
+
+        $productsSearch = trim((string) $request->query('products_search', ''));
+
         $items = $team->inventoryItems()
             ->whereHas('stockLevels', fn ($query) => $query
                 ->where('warehouse_id', $warehouse->id)
                 ->where('quantity', '>', 0))
+            ->when($productsSearch !== '', function ($query) use ($productsSearch, $warehouse): void {
+                $search = '%'.$productsSearch.'%';
+
+                $query->where(function ($query) use ($search, $warehouse): void {
+                    $query->where('name', 'like', $search)
+                        ->orWhere('sku', 'like', $search)
+                        ->orWhere('category', 'like', $search)
+                        ->orWhereHas('stockLevels', fn ($query) => $query
+                            ->where('warehouse_id', $warehouse->id)
+                            ->where('quantity', '>', 0)
+                            ->whereHas('location', fn ($query) => $query
+                                ->where('name', 'like', $search)
+                                ->orWhere('code', 'like', $search)));
+                });
+            })
             ->with(['stockLevels' => fn ($query) => $query
                 ->where('warehouse_id', $warehouse->id)
                 ->where('quantity', '>', 0)
                 ->with('location')
                 ->orderBy('warehouse_location_id')])
             ->orderBy('name')
-            ->get()
-            ->map(function (InventoryItem $item): array {
+            ->paginate(10)
+            ->withQueryString()
+            ->through(function (InventoryItem $item): array {
                 $quantity = (int) $item->stockLevels->sum('quantity');
                 $mainImage = collect($item->images ?? [])
                     ->firstWhere('id', $item->main_image_id);
@@ -132,16 +166,33 @@ class WarehouseController extends Controller
                         ->values()
                         ->all(),
                 ];
-            })
-            ->values();
+            });
+
+        $movementSearch = trim((string) $request->query('movements_search', ''));
 
         $movements = $warehouse->stockMovements()
             ->with(['location', 'user'])
+            ->when($movementSearch !== '', function ($query) use ($movementSearch): void {
+                $search = '%'.$movementSearch.'%';
+
+                $query->where(function ($query) use ($search): void {
+                    $query->where('item_name', 'like', $search)
+                        ->orWhere('sku', 'like', $search)
+                        ->orWhere('type', 'like', $search)
+                        ->orWhere('reference', 'like', $search)
+                        ->orWhere('reason', 'like', $search)
+                        ->orWhereHas('location', fn ($query) => $query
+                            ->where('name', 'like', $search)
+                            ->orWhere('code', 'like', $search))
+                        ->orWhereHas('user', fn ($query) => $query
+                            ->where('name', 'like', $search));
+                });
+            })
             ->latest()
             ->latest('id')
-            ->limit(20)
-            ->get()
-            ->map(fn (StockMovement $movement): array => [
+            ->paginate(10, ['*'], 'movements_page')
+            ->withQueryString()
+            ->through(fn (StockMovement $movement): array => [
                 'id' => $movement->id,
                 'type' => $movement->type->value,
                 'typeLabel' => $movement->type->label(),
@@ -167,15 +218,17 @@ class WarehouseController extends Controller
                 'createdAt' => $warehouse->created_at?->toIso8601String(),
             ],
             'summary' => [
-                'totalUnits' => (int) $items->sum('quantity'),
+                'totalUnits' => (int) ($summary->total_units ?? 0),
                 'totalBins' => $bins->count(),
-                'stockedItems' => $items->count(),
-                'lowStockItems' => $items->where('status', 'low')->count(),
-                'inventoryValue' => (float) $items->sum('value'),
+                'stockedItems' => (int) ($summary->stocked_items ?? 0),
+                'lowStockItems' => (int) ($summary->low_stock_items ?? 0),
+                'inventoryValue' => (float) ($summary->inventory_value ?? 0),
             ],
             'bins' => $bins,
             'items' => $items,
+            'productsSearch' => $productsSearch,
             'movements' => $movements,
+            'movementsSearch' => $movementSearch,
             'canManage' => $request->user()->can('update', $warehouse),
         ]);
     }

@@ -286,14 +286,93 @@ test('team members can view a warehouse profile with its stock and movements', f
             ->has('bins', 1)
             ->where('bins.0.totalUnits', 3)
             ->where('bins.0.stockedItems', 1)
-            ->has('items', 1)
-            ->where('items.0.sku', 'BX-1')
-            ->where('items.0.quantity', 3)
-            ->where('items.0.status', 'low')
-            ->has('movements', 1)
-            ->where('movements.0.sku', 'BX-1')
-            ->where('movements.0.typeLabel', 'Opening balance')
+            ->has('items.data', 1)
+            ->where('items.data.0.sku', 'BX-1')
+            ->where('items.data.0.quantity', 3)
+            ->where('items.data.0.status', 'low')
+            ->has('movements.data', 1)
+            ->where('movements.data.0.sku', 'BX-1')
+            ->where('movements.data.0.typeLabel', 'Opening balance')
             ->where('canManage', true));
+});
+
+test('warehouse products are paginated while summary totals include every stocked product', function () {
+    $user = User::factory()->create();
+    $team = $user->personalTeam();
+    $warehouse = $team->defaultWarehouse();
+
+    foreach (range(1, 11) as $number) {
+        createInventoryItem($team, [
+            'sku' => sprintf('PAGE-%02d', $number),
+            'name' => sprintf('Product %02d', $number),
+            'reorder_point' => 1,
+            'unit_cost' => 2.5,
+        ], 1, $warehouse);
+    }
+
+    $url = route('warehouses.show', [
+        'current_team' => $team->slug,
+        'warehouse' => $warehouse->id,
+    ]);
+
+    $this->actingAs($user)
+        ->get($url)
+        ->assertOk()
+        ->assertInertia(fn (Assert $page) => $page
+            ->component('inventories/WarehouseProfile')
+            ->where('summary.totalUnits', 11)
+            ->where('summary.stockedItems', 11)
+            ->where('summary.lowStockItems', 11)
+            ->where('summary.inventoryValue', 27.5)
+            ->where('items.total', 11)
+            ->where('items.current_page', 1)
+            ->where('items.last_page', 2)
+            ->has('items.data', 10)
+            ->where('items.data.0.sku', 'PAGE-01')
+            ->where('movements.total', 11)
+            ->where('movements.current_page', 1)
+            ->where('movements.last_page', 2)
+            ->has('movements.data', 10));
+
+    $this->actingAs($user)
+        ->get($url.'?page=2')
+        ->assertOk()
+        ->assertInertia(fn (Assert $page) => $page
+            ->where('items.current_page', 2)
+            ->has('items.data', 1)
+            ->where('items.data.0.sku', 'PAGE-11')
+            ->where('movements.current_page', 1)
+            ->has('movements.data', 10));
+
+    $this->actingAs($user)
+        ->get($url.'?movements_page=2')
+        ->assertOk()
+        ->assertInertia(fn (Assert $page) => $page
+            ->where('items.current_page', 1)
+            ->where('movements.current_page', 2)
+            ->has('movements.data', 1));
+
+    $this->actingAs($user)
+        ->get($url.'?movements_search=PAGE-05')
+        ->assertOk()
+        ->assertInertia(fn (Assert $page) => $page
+            ->where('movementsSearch', 'PAGE-05')
+            ->where('movements.total', 1)
+            ->where('movements.current_page', 1)
+            ->has('movements.data', 1)
+            ->where('movements.data.0.sku', 'PAGE-05'));
+
+    $this->actingAs($user)
+        ->get($url.'?products_search=PAGE-05')
+        ->assertOk()
+        ->assertInertia(fn (Assert $page) => $page
+            ->where('productsSearch', 'PAGE-05')
+            ->where('summary.stockedItems', 11)
+            ->where('items.total', 1)
+            ->where('items.current_page', 1)
+            ->has('items.data', 1)
+            ->where('items.data.0.sku', 'PAGE-05')
+            ->where('movements.total', 11));
 });
 
 test('warehouse profiles from another team return not found', function () {

@@ -3,21 +3,25 @@ import { Head, Link, router, usePage } from '@inertiajs/vue3';
 import {
     ArrowLeft,
     Boxes,
+    ChevronLeft,
+    ChevronRight,
     History,
     MapPin,
     Package,
     Pencil,
     Plus,
+    Search,
     Trash2,
     Warehouse as WarehouseIcon,
 } from '@lucide/vue';
-import { computed, ref } from 'vue';
+import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import BinDialog from '@/components/inventory/BinDialog.vue';
 import ConfirmActionDialog from '@/components/inventory/ConfirmActionDialog.vue';
 import WarehouseDialog from '@/components/inventory/WarehouseDialog.vue';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import DataTable from '@/components/ui/DataTable.vue';
+import { Input } from '@/components/ui/input';
 
 type WarehouseProfile = {
     id: number;
@@ -82,12 +86,36 @@ type WarehouseSummary = {
     inventoryValue: number;
 };
 
+type PaginatedStockedItems = {
+    data: StockedItem[];
+    current_page: number;
+    last_page: number;
+    from: number | null;
+    to: number | null;
+    total: number;
+    prev_page_url: string | null;
+    next_page_url: string | null;
+};
+
+type PaginatedWarehouseMovements = {
+    data: WarehouseMovement[];
+    current_page: number;
+    last_page: number;
+    from: number | null;
+    to: number | null;
+    total: number;
+    prev_page_url: string | null;
+    next_page_url: string | null;
+};
+
 const props = defineProps<{
     warehouse: WarehouseProfile;
     summary: WarehouseSummary;
     bins: WarehouseBin[];
-    items: StockedItem[];
-    movements: WarehouseMovement[];
+    items: PaginatedStockedItems;
+    productsSearch: string;
+    movements: PaginatedWarehouseMovements;
+    movementsSearch: string;
     canManage: boolean;
 }>();
 
@@ -134,6 +162,90 @@ const editDialogOpen = ref(false);
 const archiveDialogOpen = ref(false);
 const archiving = ref(false);
 const archiveError = ref('');
+const productSearch = ref(props.productsSearch);
+let productSearchTimeout: ReturnType<typeof setTimeout> | undefined;
+const movementSearch = ref(props.movementsSearch);
+let movementSearchTimeout: ReturnType<typeof setTimeout> | undefined;
+
+function updateSearchQuery(
+    searchParameter: string,
+    pageParameter: string,
+    search: string,
+): void {
+    const currentUrl = new URL(window.location.href);
+    const trimmedSearch = search.trim();
+
+    if (trimmedSearch) {
+        currentUrl.searchParams.set(searchParameter, trimmedSearch);
+    } else {
+        currentUrl.searchParams.delete(searchParameter);
+    }
+
+    currentUrl.searchParams.delete(pageParameter);
+
+    const query = currentUrl.searchParams.toString();
+    const target = query
+        ? `${currentUrl.pathname}?${query}`
+        : currentUrl.pathname;
+
+    router.get(
+        target,
+        {},
+        {
+            preserveState: true,
+            preserveScroll: true,
+            replace: true,
+        },
+    );
+}
+
+watch(productSearch, () => {
+    if (productSearchTimeout) {
+        clearTimeout(productSearchTimeout);
+    }
+
+    productSearchTimeout = setTimeout(() => {
+        updateSearchQuery('products_search', 'page', productSearch.value);
+    }, 300);
+});
+
+watch(movementSearch, () => {
+    if (movementSearchTimeout) {
+        clearTimeout(movementSearchTimeout);
+    }
+
+    movementSearchTimeout = setTimeout(() => {
+        updateSearchQuery(
+            'movements_search',
+            'movements_page',
+            movementSearch.value,
+        );
+    }, 300);
+});
+
+watch(
+    () => props.productsSearch,
+    (search) => {
+        productSearch.value = search;
+    },
+);
+
+watch(
+    () => props.movementsSearch,
+    (search) => {
+        movementSearch.value = search;
+    },
+);
+
+onBeforeUnmount(() => {
+    if (productSearchTimeout) {
+        clearTimeout(productSearchTimeout);
+    }
+
+    if (movementSearchTimeout) {
+        clearTimeout(movementSearchTimeout);
+    }
+});
 
 const binDialogOpen = ref(false);
 const editingBin = ref<WarehouseBin | null>(null);
@@ -217,6 +329,22 @@ function binsLabel(item: StockedItem): string {
     return item.bins
         .map((bin) => `${bin.name ?? bin.code ?? 'Bin'} · ${bin.quantity}`)
         .join(' · ');
+}
+
+function goToPage(url: string | null): void {
+    if (!url) {
+        return;
+    }
+
+    const parsed = new URL(url, window.location.origin);
+
+    router.get(
+        `${parsed.pathname}${parsed.search}`,
+        {},
+        {
+            preserveScroll: true,
+        },
+    );
 }
 
 function openEditBin(bin: WarehouseBin): void {
@@ -504,14 +632,27 @@ function confirmArchive(): void {
                             Stock currently held across the bins above.
                         </p>
                     </div>
-                    <Button as-child variant="outline" size="sm">
-                        <Link :href="inventoryUrl">Open inventory</Link>
-                    </Button>
+                    <div class="flex flex-col gap-2 sm:flex-row">
+                        <div class="relative w-full sm:max-w-xs">
+                            <Search
+                                class="absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground"
+                            />
+                            <Input
+                                v-model="productSearch"
+                                aria-label="Search warehouse products"
+                                placeholder="Search name, SKU, category…"
+                                class="pl-9"
+                            />
+                        </div>
+                        <Button as-child variant="outline" size="sm">
+                            <Link :href="inventoryUrl">Open inventory</Link>
+                        </Button>
+                    </div>
                 </header>
                 <!-- @vue-generic {StockedItem} -->
                 <DataTable
                     :columns="itemColumns"
-                    :items="items"
+                    :items="items.data"
                     :row-key="(item) => item.id"
                     accessible-label="Products stocked in this warehouse"
                     empty-title="No products stocked"
@@ -590,20 +731,65 @@ function confirmArchive(): void {
                         </p>
                     </template>
                 </DataTable>
+                <footer
+                    class="flex flex-col gap-3 border-t px-4 py-3 text-xs text-muted-foreground sm:flex-row sm:items-center sm:justify-between"
+                >
+                    <p>
+                        Showing {{ items.from ?? 0 }} to {{ items.to ?? 0 }} of
+                        {{ items.total }} products
+                    </p>
+                    <div class="flex items-center gap-2">
+                        <Button
+                            variant="outline"
+                            size="sm"
+                            :disabled="!items.prev_page_url"
+                            @click="goToPage(items.prev_page_url)"
+                        >
+                            <ChevronLeft class="size-4" /> Previous
+                        </Button>
+                        <span class="px-1">
+                            Page {{ items.current_page }} of
+                            {{ items.last_page }}
+                        </span>
+                        <Button
+                            variant="outline"
+                            size="sm"
+                            :disabled="!items.next_page_url"
+                            @click="goToPage(items.next_page_url)"
+                        >
+                            Next <ChevronRight class="size-4" />
+                        </Button>
+                    </div>
+                </footer>
             </section>
         </div>
 
         <section class="overflow-hidden rounded-lg border bg-card">
-            <header class="border-b p-4">
-                <h2 class="font-medium">Recent stock movements</h2>
-                <p class="mt-1 text-xs text-muted-foreground">
-                    The latest activity recorded in this warehouse.
-                </p>
+            <header
+                class="flex flex-col gap-3 border-b p-4 sm:flex-row sm:items-center sm:justify-between"
+            >
+                <div>
+                    <h2 class="font-medium">Recent stock movements</h2>
+                    <p class="mt-1 text-xs text-muted-foreground">
+                        The latest activity recorded in this warehouse.
+                    </p>
+                </div>
+                <div class="relative w-full sm:max-w-xs">
+                    <Search
+                        class="absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground"
+                    />
+                    <Input
+                        v-model="movementSearch"
+                        aria-label="Search movements"
+                        placeholder="Search item, SKU, reason…"
+                        class="pl-9"
+                    />
+                </div>
             </header>
             <!-- @vue-generic {WarehouseMovement} -->
             <DataTable
                 :columns="movementColumns"
-                :items="movements"
+                :items="movements.data"
                 :row-key="(movement) => movement.id"
                 accessible-label="Recent stock movements"
                 empty-title="No stock movements yet"
@@ -668,6 +854,36 @@ function confirmArchive(): void {
                     </p>
                 </template>
             </DataTable>
+            <footer
+                class="flex flex-col gap-3 border-t px-4 py-3 text-xs text-muted-foreground sm:flex-row sm:items-center sm:justify-between"
+            >
+                <p>
+                    Showing {{ movements.from ?? 0 }} to
+                    {{ movements.to ?? 0 }} of {{ movements.total }} movements
+                </p>
+                <div class="flex items-center gap-2">
+                    <Button
+                        variant="outline"
+                        size="sm"
+                        :disabled="!movements.prev_page_url"
+                        @click="goToPage(movements.prev_page_url)"
+                    >
+                        <ChevronLeft class="size-4" /> Previous
+                    </Button>
+                    <span class="px-1">
+                        Page {{ movements.current_page }} of
+                        {{ movements.last_page }}
+                    </span>
+                    <Button
+                        variant="outline"
+                        size="sm"
+                        :disabled="!movements.next_page_url"
+                        @click="goToPage(movements.next_page_url)"
+                    >
+                        Next <ChevronRight class="size-4" />
+                    </Button>
+                </div>
+            </footer>
         </section>
 
         <WarehouseDialog v-model:open="editDialogOpen" :warehouse="warehouse" />
