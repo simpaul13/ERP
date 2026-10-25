@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { Head, Link, usePage } from '@inertiajs/vue3';
 import { Barcode, Boxes, RotateCcw } from '@lucide/vue';
-import { computed, ref } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -32,18 +32,53 @@ const workflow = ref<Workflow>('receiving');
 const warehouseId = ref(props.warehouses[0]?.id ?? 0);
 const itemCode = ref('');
 const binCode = ref('');
+const binSuggestionsOpen = ref(false);
 const quantity = ref(1);
-const transactionId = ref(crypto.randomUUID());
+const transactionId = ref('');
 const scans = ref<ScanResult[]>([]);
 const feedback = ref(
     'Scan an item, then scan its bin to record the warehouse action.',
 );
 const error = ref('');
 const scanning = ref(false);
+const canRecordScan = computed(
+    () =>
+        Boolean(teamSlug()) &&
+        currentWarehouse.value !== undefined &&
+        itemCode.value.trim().length > 0 &&
+        binCode.value.trim().length > 0 &&
+        String(quantity.value).trim().length > 0 &&
+        Number.isFinite(Number(quantity.value)) &&
+        Number(quantity.value) >= (workflow.value === 'cycle_count' ? 0 : 1) &&
+        Number(quantity.value) <= 1000000,
+);
 
 const currentWarehouse = computed(() =>
     props.warehouses.find((warehouse) => warehouse.id === warehouseId.value),
 );
+const matchingBins = computed(() => {
+    const search = binCode.value.trim().toLocaleLowerCase();
+
+    return (currentWarehouse.value?.locations ?? []).filter(
+        (location) =>
+            location.code.toLocaleLowerCase().includes(search) ||
+            location.name.toLocaleLowerCase().includes(search),
+    );
+});
+
+onMounted(() => {
+    transactionId.value = crypto.randomUUID();
+});
+
+watch(warehouseId, () => {
+    binCode.value = '';
+    binSuggestionsOpen.value = false;
+});
+
+function selectBin(code: string): void {
+    binCode.value = code;
+    binSuggestionsOpen.value = false;
+}
 
 defineOptions({
     layout: (layoutProps: { currentTeam?: { slug: string } | null }) => ({
@@ -218,8 +253,8 @@ async function recordScan(): Promise<void> {
                     <div>
                         <h2 class="font-medium">Scan transaction</h2>
                         <p class="mt-1 text-xs text-muted-foreground">
-                            Each confirmed scan is linked to your account and
-                            this transaction.
+                            Recording a scan can change stock. Confirm the task,
+                            warehouse, item, bin, and quantity first.
                         </p>
                     </div>
                     <Button
@@ -230,21 +265,6 @@ async function recordScan(): Promise<void> {
                     >
                         <RotateCcw class="size-4" /> New transaction
                     </Button>
-                </div>
-
-                <div class="grid gap-2">
-                    <Label for="scan-workflow">Warehouse task</Label>
-                    <select
-                        id="scan-workflow"
-                        v-model="workflow"
-                        class="h-9 rounded-md border bg-background px-3 text-sm"
-                    >
-                        <option value="receiving">Receiving · add stock</option>
-                        <option value="picking">Picking · remove stock</option>
-                        <option value="cycle_count">
-                            Cycle count · set counted quantity
-                        </option>
-                    </select>
                 </div>
 
                 <div class="grid gap-2">
@@ -261,6 +281,21 @@ async function recordScan(): Promise<void> {
                             :value="warehouse.id"
                         >
                             {{ warehouse.name }}
+                        </option>
+                    </select>
+                </div>
+
+                <div class="grid gap-2">
+                    <Label for="scan-workflow">Warehouse task</Label>
+                    <select
+                        id="scan-workflow"
+                        v-model="workflow"
+                        class="h-9 rounded-md border bg-background px-3 text-sm"
+                    >
+                        <option value="receiving">Receiving · add stock</option>
+                        <option value="picking">Picking · remove stock</option>
+                        <option value="cycle_count">
+                            Cycle count · set counted quantity
                         </option>
                     </select>
                 </div>
@@ -283,13 +318,45 @@ async function recordScan(): Promise<void> {
                         id="scan-bin"
                         v-model="binCode"
                         autocomplete="off"
-                        placeholder="Scan or enter bin code"
+                        placeholder="Choose or scan a bin code"
                         required
+                        role="combobox"
+                        aria-autocomplete="list"
+                        aria-controls="warehouse-bin-options"
+                        :aria-expanded="binSuggestionsOpen"
+                        @focus="binSuggestionsOpen = true"
+                        @click="binSuggestionsOpen = true"
+                        @blur="binSuggestionsOpen = false"
                         @keydown.enter.prevent="advanceFromBin"
                     />
+                    <ul
+                        v-if="binSuggestionsOpen && matchingBins.length"
+                        id="warehouse-bin-options"
+                        role="listbox"
+                        aria-label="Available bins"
+                        class="max-h-48 overflow-y-auto rounded-md border bg-popover p-1 shadow-sm"
+                    >
+                        <button
+                            v-for="location in matchingBins"
+                            :key="location.id"
+                            type="button"
+                            role="option"
+                            aria-selected="false"
+                            class="flex w-full cursor-pointer items-center justify-between gap-3 rounded-sm px-3 py-2 text-left text-sm hover:bg-accent focus-visible:bg-accent focus-visible:outline-none"
+                            @mousedown.prevent
+                            @click="selectBin(location.code)"
+                        >
+                            <span>{{ location.name }}</span>
+                            <span class="text-muted-foreground">{{
+                                location.code
+                            }}</span>
+                        </button>
+                    </ul>
                     <p class="text-xs text-muted-foreground">
-                        {{ currentWarehouse?.locations.length ?? 0 }} bins
-                        available in
+                        Choose a listed bin, or scan/type its code. {{
+                            currentWarehouse?.locations.length ?? 0
+                        }}
+                        bins available in
                         {{ currentWarehouse?.name ?? 'this warehouse' }}.
                     </p>
                 </div>
@@ -331,10 +398,7 @@ async function recordScan(): Promise<void> {
                 >
                     {{ feedback }}
                 </p>
-                <Button
-                    type="submit"
-                    :disabled="scanning || !warehouses.length"
-                >
+                <Button type="submit" :disabled="scanning || !canRecordScan">
                     <Barcode class="size-4" />
                     {{ scanning ? 'Recording scan…' : 'Record scan' }}
                 </Button>

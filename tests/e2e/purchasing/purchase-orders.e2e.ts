@@ -52,6 +52,18 @@ describe('purchase order workflow', () => {
             await expect(
                 screen.getByRole('dialog', 'New purchase order'),
             ).toBeVisible();
+            await expect(screen.getByLabel('Inventory item')).toHaveValue('');
+            await expect(
+                screen.getByRole('button', 'Create draft'),
+            ).toBeDisabled();
+            await screen.getByRole('button', 'Add item').tap();
+            await expect(
+                screen.getByLabel('Inventory item').nth(1),
+            ).toHaveValue('');
+            await expect(screen.getByLabel('Unit cost').nth(1)).toHaveValue(
+                '0',
+            );
+            await screen.getByRole('button', 'Remove item 2').tap();
             await screen
                 .getByLabel('Supplier')
                 .selectOption({ label: supplierName });

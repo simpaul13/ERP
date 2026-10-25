@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { Head } from '@inertiajs/vue3';
+import { Head, Link } from '@inertiajs/vue3';
 import {
     Activity,
     AlertTriangle,
     Boxes,
     CircleDollarSign,
     GripVertical,
+    PackagePlus,
     PackageCheck,
     RotateCcw,
     Warehouse,
@@ -208,7 +209,7 @@ const initialWidgets = computed<DashboardWidget[]>(() => [
         x: 0,
         y: 2,
         w: 8,
-        h: 4,
+        h: 3,
     },
     {
         id: 'reorder-watch',
@@ -218,7 +219,7 @@ const initialWidgets = computed<DashboardWidget[]>(() => [
         x: 8,
         y: 2,
         w: 4,
-        h: 4,
+        h: 3,
     },
     {
         id: 'recent-activity',
@@ -226,15 +227,26 @@ const initialWidgets = computed<DashboardWidget[]>(() => [
         kind: 'activity',
         icon: Warehouse,
         x: 0,
-        y: 6,
+        y: 5,
         w: 12,
-        h: 4,
+        h: 3,
     },
 ]);
 
 const widgets = computed<DashboardWidget[]>(() => initialWidgets.value);
-const isEditing = ref(true);
+const isEditing = ref(false);
 const gridElement = ref<HTMLDivElement | null>(null);
+
+const teamSlug = computed(() => props.currentTeam?.slug ?? null);
+const inventoryUrl = computed(() =>
+    teamSlug.value ? `/${teamSlug.value}/inventories` : '/inventories',
+);
+const scanUrl = computed(() =>
+    teamSlug.value ? `/${teamSlug.value}/inventory-scans` : '/inventory-scans',
+);
+const purchaseOrdersUrl = computed(() =>
+    teamSlug.value ? `/${teamSlug.value}/purchase-orders` : '/purchase-orders',
+);
 
 let grid: GridStack | null = null;
 let defaultLayout: GridStackWidget[] = [];
@@ -311,8 +323,8 @@ function resetLayout(): void {
                     Inventory overview
                 </h1>
                 <p class="mt-1 max-w-2xl text-sm text-muted-foreground">
-                    Live inventory data for your team. Drag and resize widgets
-                    to customize your dashboard layout.
+                    Live inventory data for your team. Common tasks are ready
+                    below; dashboard layout editing is optional.
                 </p>
             </div>
 
@@ -331,7 +343,41 @@ function resetLayout(): void {
             </div>
         </header>
 
+        <section
+            class="rounded-lg border bg-card p-4 sm:p-5"
+            aria-labelledby="start-tasks-title"
+        >
+            <div class="mb-3">
+                <h2 id="start-tasks-title" class="font-medium">
+                    Start with a task
+                </h2>
+                <p class="mt-1 text-sm text-muted-foreground">
+                    Go straight to the work you need to do.
+                </p>
+            </div>
+            <div class="flex flex-wrap gap-2">
+                <Button as-child variant="outline" size="sm">
+                    <Link :href="inventoryUrl"
+                        ><Boxes class="size-4" /> Find an item</Link
+                    >
+                </Button>
+                <Button as-child variant="outline" size="sm">
+                    <Link :href="scanUrl"
+                        ><PackagePlus class="size-4" /> Receive or move
+                        stock</Link
+                    >
+                </Button>
+                <Button as-child variant="outline" size="sm">
+                    <Link :href="purchaseOrdersUrl"
+                        ><PackageCheck class="size-4" /> Create a purchase
+                        order</Link
+                    >
+                </Button>
+            </div>
+        </section>
+
         <div
+            v-if="isEditing"
             class="flex items-center gap-2 rounded-md border bg-muted/40 px-3 py-2 text-sm text-muted-foreground"
             role="status"
         >
@@ -362,7 +408,7 @@ function resetLayout(): void {
                         class="flex h-full flex-col overflow-hidden rounded-lg border bg-card text-card-foreground"
                     >
                         <header
-                            class="flex items-center justify-between gap-3 border-b px-4 py-3"
+                            class="flex items-center justify-between gap-3 border-b px-4 py-2"
                         >
                             <div class="flex min-w-0 items-center gap-2.5">
                                 <component
@@ -389,11 +435,11 @@ function resetLayout(): void {
 
                         <div
                             v-if="widget.kind === 'metric'"
-                            class="flex flex-1 flex-col justify-between p-4"
+                            class="flex flex-1 flex-col justify-between p-3"
                         >
                             <div>
                                 <p
-                                    class="text-3xl font-semibold tracking-tight tabular-nums"
+                                    class="text-2xl font-semibold tracking-tight tabular-nums"
                                 >
                                     {{ widget.value }}
                                 </p>
@@ -403,7 +449,7 @@ function resetLayout(): void {
                             </div>
                             <p
                                 v-if="widget.trend"
-                                class="mt-4 text-xs font-medium text-muted-foreground"
+                                class="mt-2 text-xs font-medium text-muted-foreground"
                             >
                                 {{ widget.trend }}
                             </p>
@@ -532,7 +578,7 @@ function resetLayout(): void {
 
                         <div
                             v-else-if="widget.kind === 'activity'"
-                            class="flex flex-1 flex-col divide-y"
+                            class="flex min-h-0 flex-1 flex-col divide-y overflow-y-auto"
                         >
                             <template v-if="activities.length > 0">
                                 <div

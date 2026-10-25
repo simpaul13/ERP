@@ -126,6 +126,17 @@ const draftTotal = computed(() =>
         0,
     ),
 );
+const hasValidDraftItems = computed(() => {
+    const selectedItemIds = form.value.items.map(
+        (line) => line.inventory_item_id,
+    );
+
+    return (
+        selectedItemIds.length > 0 &&
+        selectedItemIds.every((itemId) => itemId !== '') &&
+        new Set(selectedItemIds).size === selectedItemIds.length
+    );
+});
 
 function teamSlug(): string | null {
     const team = page.props.currentTeam as { slug: string } | null | undefined;
@@ -149,12 +160,21 @@ function openCreate(): void {
 }
 
 function newLine(): DraftLine {
-    const firstItem = props.items[0];
     return {
-        inventory_item_id: firstItem ? String(firstItem.id) : '',
+        inventory_item_id: '',
         quantity: 1,
-        unit_cost: firstItem?.unitCost ?? 0,
+        unit_cost: 0,
     };
+}
+
+function isItemSelectedElsewhere(
+    itemId: number,
+    currentIndex: number,
+): boolean {
+    return form.value.items.some(
+        (line, index) =>
+            index !== currentIndex && line.inventory_item_id === String(itemId),
+    );
 }
 
 function addLine(): void {
@@ -179,7 +199,14 @@ function updateDraftItem(index: number): void {
 
 function createOrder(): void {
     const slug = teamSlug();
-    if (!slug || saving.value) return;
+    if (
+        !slug ||
+        saving.value ||
+        !form.value.supplier_id ||
+        !hasValidDraftItems.value
+    ) {
+        return;
+    }
 
     saving.value = true;
     formError.value = '';
@@ -619,10 +646,21 @@ function statusVariant(
                                         v-for="item in items"
                                         :key="item.id"
                                         :value="String(item.id)"
+                                        :disabled="
+                                            isItemSelectedElsewhere(
+                                                item.id,
+                                                index,
+                                            )
+                                        "
                                     >
                                         {{ item.name }} · {{ item.sku }}
                                     </option>
                                 </select>
+                                <p class="text-xs text-muted-foreground">
+                                    Choose a product to fill its current unit
+                                    cost; you can adjust the cost for this
+                                    order.
+                                </p>
                             </div>
                             <div class="grid gap-2">
                                 <Label :for="`po-quantity-${index}`"
@@ -662,6 +700,24 @@ function statusVariant(
                         <p class="text-right text-sm font-semibold">
                             Order total: {{ currency.format(draftTotal) }}
                         </p>
+                        <p
+                            v-if="
+                                form.items.some(
+                                    (line) => !line.inventory_item_id,
+                                )
+                            "
+                            class="text-xs text-muted-foreground"
+                        >
+                            Select an inventory item on every line to calculate
+                            the order total.
+                        </p>
+                        <p
+                            v-else-if="!hasValidDraftItems"
+                            class="text-xs text-muted-foreground"
+                        >
+                            Each inventory item can appear only once on this
+                            draft.
+                        </p>
                     </section>
                     <p
                         v-if="formError"
@@ -676,9 +732,15 @@ function statusVariant(
                             variant="outline"
                             @click="createOpen = false"
                             >Cancel</Button
-                        ><Button type="submit" :disabled="saving">{{
-                            saving ? 'Saving…' : 'Create draft'
-                        }}</Button></DialogFooter
+                        ><Button
+                            type="submit"
+                            :disabled="
+                                saving ||
+                                !form.supplier_id ||
+                                !hasValidDraftItems
+                            "
+                            >{{ saving ? 'Saving…' : 'Create draft' }}</Button
+                        ></DialogFooter
                     >
                 </form>
             </DialogContent>

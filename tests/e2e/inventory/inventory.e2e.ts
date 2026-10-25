@@ -247,7 +247,13 @@ describe('inventory module', () => {
             await expect(
                 screen.getByRole('heading', 'Warehouse scanning'),
             ).toBeVisible();
+            await expect(
+                screen.getByRole('button', 'Record scan'),
+            ).toBeDisabled();
             await screen.getByLabel('Item barcode / SKU').fill(sku);
+            await expect(
+                screen.getByRole('button', 'Record scan'),
+            ).toBeDisabled();
             await screen.getByLabel('Bin barcode / code').fill('DEFAULT');
             await screen.getByLabel('Quantity').fill('2');
             await screen.getByRole('button', 'Record scan').tap();
