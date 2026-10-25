@@ -515,9 +515,9 @@ test('inventory index paginates items and reports team summary values', function
         ->get(route('inventories.index', ['current_team' => $team->slug]));
 
     $response->assertInertia(fn (Assert $page) => $page
-        ->has('inventoryItems.data', 25)
+        ->has('inventoryItems.data', 15)
         ->where('inventoryItems.total', 30)
-        ->where('inventoryItems.per_page', 25)
+        ->where('inventoryItems.per_page', 15)
         ->where('summary.totalItems', 30)
         ->where('summary.totalUnits', 30)
         ->where('summary.lowStockCount', 30)
@@ -531,8 +531,28 @@ test('inventory index paginates items and reports team summary values', function
             'page' => 2,
         ]))
         ->assertInertia(fn (Assert $page) => $page
-            ->has('inventoryItems.data', 5)
+            ->has('inventoryItems.data', 15)
             ->where('inventoryItems.current_page', 2),
+        );
+
+    $this->actingAs($user)
+        ->get(route('inventories.index', [
+            'current_team' => $team->slug,
+            'per_page' => 10,
+        ]))
+        ->assertInertia(fn (Assert $page) => $page
+            ->has('inventoryItems.data', 10)
+            ->where('inventoryItems.per_page', 10),
+        );
+
+    $this->actingAs($user)
+        ->get(route('inventories.index', [
+            'current_team' => $team->slug,
+            'per_page' => 100,
+        ]))
+        ->assertInertia(fn (Assert $page) => $page
+            ->has('inventoryItems.data', 15)
+            ->where('inventoryItems.per_page', 15),
         );
 });
 

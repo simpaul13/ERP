@@ -45,6 +45,8 @@ class InventoryController extends Controller
             'status' => in_array($status, ['low', 'out'], true) ? $status : 'all',
             'warehouse' => $warehouse,
         ];
+        $requestedPerPage = (int) $request->input('per_page', 15);
+        $perPage = in_array($requestedPerPage, [10, 15, 25], true) ? $requestedPerPage : 15;
 
         $inventoryItems = $team->inventoryItems()
             ->with(['stockLevels.warehouse', 'stockLevels.location'])
@@ -72,7 +74,7 @@ class InventoryController extends Controller
             ->when($filters['status'] === 'out', fn ($query) => $query
                 ->where('quantity', 0))
             ->orderBy('name')
-            ->paginate(25)
+            ->paginate($perPage)
             ->withQueryString()
             ->through(fn (InventoryItem $item): array => $this->toArray($item));
 

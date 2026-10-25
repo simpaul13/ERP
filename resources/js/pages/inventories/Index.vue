@@ -206,6 +206,7 @@ const pageFilters = page.props.filters as InventoryFilters | undefined;
 const query = ref(pageFilters?.search ?? '');
 const selectedStatus = ref<InventoryStatus>(pageFilters?.status ?? 'all');
 const selectedWarehouse = ref<number>(pageFilters?.warehouse ?? 0);
+const selectedPageSize = ref<number>(inventoryItems.value?.per_page ?? 15);
 
 const savingItem = ref(false);
 const dialogOpen = ref(false);
@@ -291,6 +292,10 @@ watch(selectedWarehouse, () => {
     applyFilters();
 });
 
+watch(selectedPageSize, () => {
+    applyFilters();
+});
+
 watch(
     () => newItem.value.warehouseId,
     (warehouseId) => {
@@ -366,6 +371,7 @@ function applyFilters(): void {
             search: query.value.trim(),
             status: selectedStatus.value,
             warehouse: selectedWarehouse.value || undefined,
+            per_page: selectedPageSize.value,
         },
         {
             preserveState: true,
@@ -1263,23 +1269,42 @@ defineOptions({
                     {{ inventoryItems?.to ?? 0 }} of
                     {{ inventoryItems?.total ?? 0 }} items
                 </p>
-                <div class="flex items-center gap-2">
-                    <Button
-                        variant="outline"
-                        size="sm"
-                        :disabled="!inventoryItems?.prev_page_url"
-                        @click="goToPage(inventoryItems?.prev_page_url ?? null)"
-                    >
-                        <ChevronLeft class="size-4" /> Previous
-                    </Button>
-                    <Button
-                        variant="outline"
-                        size="sm"
-                        :disabled="!inventoryItems?.next_page_url"
-                        @click="goToPage(inventoryItems?.next_page_url ?? null)"
-                    >
-                        Next <ChevronRight class="size-4" />
-                    </Button>
+                <div class="flex flex-wrap items-center gap-3">
+                    <div class="flex items-center gap-2">
+                        <label for="inventory-page-size">Rows per page</label>
+                        <select
+                            id="inventory-page-size"
+                            v-model.number="selectedPageSize"
+                            aria-label="Items per page"
+                            class="h-9 rounded-md border bg-background px-2 text-sm text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+                        >
+                            <option :value="10">10</option>
+                            <option :value="15">15</option>
+                            <option :value="25">25</option>
+                        </select>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <Button
+                            variant="outline"
+                            size="sm"
+                            :disabled="!inventoryItems?.prev_page_url"
+                            @click="
+                                goToPage(inventoryItems?.prev_page_url ?? null)
+                            "
+                        >
+                            <ChevronLeft class="size-4" /> Previous
+                        </Button>
+                        <Button
+                            variant="outline"
+                            size="sm"
+                            :disabled="!inventoryItems?.next_page_url"
+                            @click="
+                                goToPage(inventoryItems?.next_page_url ?? null)
+                            "
+                        >
+                            Next <ChevronRight class="size-4" />
+                        </Button>
+                    </div>
                 </div>
             </footer>
         </section>

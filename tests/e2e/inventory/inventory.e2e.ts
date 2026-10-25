@@ -74,6 +74,37 @@ describe('inventory module', () => {
     );
 
     test(
+        'changes the inventory page size',
+        { session: 'inventory-user' },
+        async ({ screen }) => {
+            const suffix = Date.now();
+
+            for (let index = 1; index <= 11; index++) {
+                const sku = `E2E-PAGE-SIZE-${suffix}-${String(index).padStart(2, '0')}`;
+
+                await createInventoryItem(
+                    screen,
+                    sku,
+                    `Page size product ${index} ${suffix}`,
+                    1,
+                );
+            }
+
+            await screen.getByLabel('Search inventory').fill('');
+            await screen
+                .getByLabel('Items per page')
+                .selectOption({ label: '10' });
+            await expect(
+                screen.getByText(/Showing 1 to 10 of .* items/),
+            ).toBeVisible();
+            await screen.getByRole('button', 'Next').tap();
+            await expect(
+                screen.getByText(/Showing 11 to .* of .* items/),
+            ).toBeVisible();
+        },
+    );
+
+    test(
         'paginates products in a warehouse',
         { session: 'inventory-user' },
         async ({ screen }) => {
