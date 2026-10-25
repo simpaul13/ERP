@@ -30,9 +30,9 @@ async function createInventoryItem(
     await screen.getByLabel('Reorder point').fill('4');
     await screen.getByLabel('Unit cost').fill('1.25');
     await screen.getByRole('button', 'Add item').last().tap();
-    await expect(
-        screen.getByRole('dialog', 'Add inventory item'),
-    ).toHaveCount(0);
+    await expect(screen.getByRole('dialog', 'Add inventory item')).toHaveCount(
+        0,
+    );
     await screen.getByLabel('Search inventory').fill(sku);
 
     await expect(screen.getByText(name)).toBeVisible();
@@ -232,6 +232,30 @@ describe('inventory module', () => {
             await expect(
                 history.getByText(itemName, { exact: false }).first(),
             ).toBeVisible();
+        },
+    );
+
+    test(
+        'receives inventory using item and bin barcode scans',
+        { session: 'inventory-user' },
+        async ({ screen }) => {
+            const sku = `E2E-SCAN-${Date.now()}`;
+            const itemName = `E2E Scan Item ${sku}`;
+
+            await createInventoryItem(screen, sku, itemName, 5);
+            await screen.getByRole('link', 'Scan stock').tap();
+            await expect(
+                screen.getByRole('heading', 'Warehouse scanning'),
+            ).toBeVisible();
+            await screen.getByLabel('Item barcode / SKU').fill(sku);
+            await screen.getByLabel('Bin barcode / code').fill('DEFAULT');
+            await screen.getByLabel('Quantity').fill('2');
+            await screen.getByRole('button', 'Record scan').tap();
+
+            await expect(screen.getByText(`${sku} → DEFAULT`)).toBeVisible();
+            await expect(screen.getByRole('status')).toContainText(
+                'Scan recorded successfully.',
+            );
         },
     );
 });

@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\Inventories\InventoryController;
+use App\Http\Controllers\Inventories\InventoryScanController;
 use App\Http\Controllers\Inventories\WarehouseController;
 use App\Http\Controllers\Inventories\WarehouseLocationController;
 use App\Http\Controllers\Purchases\PurchaseOrderController;
@@ -28,6 +29,8 @@ Route::prefix('{current_team}')
         Route::post('purchase-orders/{purchaseOrder}/return', [PurchaseOrderController::class, 'returnGoods'])->name('purchase-orders.return');
         Route::post('purchase-orders/{purchaseOrder}/cancel', [PurchaseOrderController::class, 'cancel'])->name('purchase-orders.cancel');
         Route::get('inventories', [InventoryController::class, 'index'])->name('inventories.index');
+        Route::get('inventory-scans', [InventoryScanController::class, 'index'])->name('inventory-scans.index');
+        Route::post('inventory-scans', [InventoryScanController::class, 'store'])->name('inventory-scans.store');
         Route::get('inventories/{inventoryItem}', [InventoryController::class, 'show'])->name('inventories.show');
         Route::post('inventories', [InventoryController::class, 'store'])->name('inventories.store');
         Route::patch('inventories/{inventoryItem}', [InventoryController::class, 'update'])->name('inventories.update');

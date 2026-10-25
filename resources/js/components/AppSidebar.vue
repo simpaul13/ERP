@@ -2,6 +2,7 @@
 import { Link, usePage } from '@inertiajs/vue3';
 import {
     BadgeDollarSign,
+    Barcode,
     Boxes,
     ChartNoAxesCombined,
     LayoutGrid,
@@ -52,6 +53,13 @@ const mainNavItems = computed<NavItem[]>(() => [
             ? `/${page.props.currentTeam.slug}/inventories`
             : '/inventories',
         icon: Boxes,
+    },
+    {
+        title: 'Scan stock',
+        href: page.props.currentTeam
+            ? `/${page.props.currentTeam.slug}/inventory-scans`
+            : '/inventory-scans',
+        icon: Barcode,
     },
     {
         title: 'Warehouses',
