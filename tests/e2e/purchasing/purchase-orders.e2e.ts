@@ -107,6 +107,18 @@ describe('purchase order workflow', () => {
             await orderCard.getByText('Order history (4)').tap();
             await expect(orderCard).toContainText(`Received 8 × ${itemName}`);
 
+            await orderCard.getByRole('button', 'Return').tap();
+            await expect(
+                screen.getByRole('dialog', `Return ${itemName}`),
+            ).toBeVisible();
+            await screen.getByLabel('Quantity returned').fill('2');
+            await screen.getByLabel('Return reason').fill('Damaged in transit');
+            await screen.getByRole('button', 'Record return').tap();
+            await expect(orderCard).toContainText('2 returned');
+            await expect(orderCard).toContainText(
+                `Returned 2 × ${itemName} (${sku.toUpperCase()}) to supplier: Damaged in transit`,
+            );
+
             await app.open('/e2e-test-user/suppliers');
             await browser.onDialog('accept');
             await screen

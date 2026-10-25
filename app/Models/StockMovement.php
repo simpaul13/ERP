@@ -12,6 +12,7 @@ use Illuminate\Support\Carbon;
  * @property int $id
  * @property int $team_id
  * @property int|null $inventory_item_id
+ * @property int|null $purchase_order_item_id
  * @property int $warehouse_id
  * @property int|null $warehouse_location_id
  * @property string $item_name
@@ -35,6 +36,7 @@ use Illuminate\Support\Carbon;
 #[Fillable([
     'team_id',
     'inventory_item_id',
+    'purchase_order_item_id',
     'warehouse_id',
     'warehouse_location_id',
     'item_name',

@@ -71,6 +71,15 @@ class PurchaseOrderPolicy
             && $this->isAdmin($user, $purchaseOrder->team);
     }
 
+    public function returnGoods(User $user, PurchaseOrder $purchaseOrder): bool
+    {
+        return in_array($purchaseOrder->status, [
+            PurchaseOrderStatus::PartiallyReceived,
+            PurchaseOrderStatus::Received,
+            PurchaseOrderStatus::Cancelled,
+        ], true) && $this->isAdmin($user, $purchaseOrder->team);
+    }
+
     public function cancel(User $user, PurchaseOrder $purchaseOrder): bool
     {
         return in_array($purchaseOrder->status, [

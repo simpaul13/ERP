@@ -9,6 +9,7 @@ use App\Http\Controllers\Controller;
 use App\Models\InventoryItem;
 use App\Models\PurchaseOrder;
 use App\Models\PurchaseOrderItem;
+use App\Models\StockMovement;
 use App\Models\Supplier;
 use App\Models\Warehouse;
 use Illuminate\Http\RedirectResponse;
@@ -265,6 +266,77 @@ class PurchaseOrderController extends Controller
     /**
      * Cancel an order that has not been fully received and retain the reason.
      */
+    public function returnGoods(
+        Request $request,
+        string $currentTeamSlug,
+        PurchaseOrder $purchaseOrder,
+        RecordStockMovement $recordStockMovement,
+    ): RedirectResponse {
+        $team = $request->user()->currentTeam;
+        $order = $this->teamOrder($request, $purchaseOrder);
+        Gate::authorize('returnGoods', $order);
+
+        $validated = $request->validate([
+            'purchase_order_item_id' => ['required', 'integer', Rule::exists('purchase_order_items', 'id')->where('purchase_order_id', $order->id)],
+            'warehouse_id' => ['required', 'integer', Rule::exists('warehouses', 'id')->where('team_id', $team->id)],
+            'warehouse_location_id' => ['required', 'integer', Rule::exists('warehouse_locations', 'id')->where('warehouse_id', (int) $request->input('warehouse_id'))],
+            'quantity' => ['required', 'integer', 'min:1', 'max:1000000'],
+            'reason' => ['required', 'string', 'max:2000'],
+        ]);
+
+        DB::transaction(function () use ($order, $team, $request, $validated, $recordStockMovement): void {
+            $lockedOrder = PurchaseOrder::query()->whereKey($order->id)->lockForUpdate()->firstOrFail();
+            Gate::authorize('returnGoods', $lockedOrder);
+            $line = $lockedOrder->items()->whereKey($validated['purchase_order_item_id'])->lockForUpdate()->firstOrFail();
+            $returnedQuantity = (int) StockMovement::query()
+                ->where('purchase_order_item_id', $line->id)
+                ->where('type', StockMovementType::Issue)
+                ->sum(DB::raw('ABS(quantity)'));
+            $returnableQuantity = $line->received_quantity - $returnedQuantity;
+            $quantity = (int) $validated['quantity'];
+
+            if ($quantity > $returnableQuantity) {
+                throw ValidationException::withMessages([
+                    'quantity' => "Only {$returnableQuantity} unit(s) can be returned.",
+                ]);
+            }
+
+            $inventoryItem = $line->inventory_item_id
+                ? $team->inventoryItems()->find($line->inventory_item_id)
+                : null;
+            if (! $inventoryItem instanceof InventoryItem) {
+                throw ValidationException::withMessages([
+                    'purchase_order_item_id' => 'The inventory item for this order line is no longer available.',
+                ]);
+            }
+
+            $warehouse = $team->warehouses()->findOrFail($validated['warehouse_id']);
+            $location = $warehouse->locations()->findOrFail($validated['warehouse_location_id']);
+            $movement = $recordStockMovement->handle(
+                team: $team,
+                inventoryItem: $inventoryItem,
+                warehouse: $warehouse,
+                location: $location,
+                type: StockMovementType::Issue,
+                quantity: -$quantity,
+                unitCost: (float) $line->unit_cost,
+                reference: $lockedOrder->number(),
+                reason: 'Supplier return: '.trim($validated['reason']),
+                user: $request->user(),
+            );
+            $movement->update(['purchase_order_item_id' => $line->id]);
+
+            $lockedOrder->events()->create([
+                'user_id' => $request->user()->id,
+                'from_status' => $lockedOrder->status->value,
+                'to_status' => $lockedOrder->status->value,
+                'note' => "Returned {$quantity} × {$line->item_name} ({$line->sku}) to supplier: ".trim($validated['reason']),
+            ]);
+        });
+
+        return back();
+    }
+
     public function cancel(Request $request, string $currentTeamSlug, PurchaseOrder $purchaseOrder): RedirectResponse
     {
         $order = $this->teamOrder($request, $purchaseOrder);
@@ -330,6 +402,10 @@ class PurchaseOrderController extends Controller
                 'sku' => $item->sku,
                 'quantity' => $item->quantity,
                 'receivedQuantity' => $item->received_quantity,
+                'returnedQuantity' => (int) StockMovement::query()
+                    ->where('purchase_order_item_id', $item->id)
+                    ->where('type', StockMovementType::Issue)
+                    ->sum(DB::raw('ABS(quantity)')),
                 'unitCost' => (float) $item->unit_cost,
                 'lineTotal' => (float) $item->line_total,
             ])->values(),

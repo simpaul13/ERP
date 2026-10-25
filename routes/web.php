@@ -25,6 +25,7 @@ Route::prefix('{current_team}')
         Route::post('purchase-orders/{purchaseOrder}/submit', [PurchaseOrderController::class, 'submit'])->name('purchase-orders.submit');
         Route::post('purchase-orders/{purchaseOrder}/approve', [PurchaseOrderController::class, 'approve'])->name('purchase-orders.approve');
         Route::post('purchase-orders/{purchaseOrder}/receive', [PurchaseOrderController::class, 'receive'])->name('purchase-orders.receive');
+        Route::post('purchase-orders/{purchaseOrder}/return', [PurchaseOrderController::class, 'returnGoods'])->name('purchase-orders.return');
         Route::post('purchase-orders/{purchaseOrder}/cancel', [PurchaseOrderController::class, 'cancel'])->name('purchase-orders.cancel');
         Route::get('inventories', [InventoryController::class, 'index'])->name('inventories.index');
         Route::get('inventories/{inventoryItem}', [InventoryController::class, 'show'])->name('inventories.show');

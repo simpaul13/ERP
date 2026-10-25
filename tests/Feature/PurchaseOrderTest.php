@@ -130,6 +130,67 @@ test('purchase order creation validates team-owned supplier and items', function
     expect($team->purchaseOrders()->exists())->toBeFalse();
 });
 
+test('admins can return received goods with an audited movement and cannot return more than received', function () {
+    $owner = User::factory()->create();
+    $team = $owner->personalTeam();
+    $supplier = $team->suppliers()->create(['name' => 'Northwind Parts']);
+    $item = createInventoryItem($team, ['sku' => 'RET-1', 'name' => 'Returnable item']);
+    $warehouse = $team->defaultWarehouse();
+    $location = $warehouse->defaultLocation();
+    $order = $team->purchaseOrders()->create([
+        'supplier_id' => $supplier->id,
+        'created_by' => $owner->id,
+        'status' => PurchaseOrderStatus::Approved,
+        'expected_date' => now()->addWeek()->toDateString(),
+    ]);
+    $line = $order->items()->create([
+        'inventory_item_id' => $item->id,
+        'item_name' => $item->name,
+        'sku' => $item->sku,
+        'quantity' => 5,
+        'unit_cost' => '2.00',
+        'line_total' => '10.00',
+    ]);
+    $indexUrl = route('purchase-orders.index', ['current_team' => $team->slug]);
+
+    $this->actingAs($owner)
+        ->from($indexUrl)
+        ->post(route('purchase-orders.receive', ['current_team' => $team->slug, 'purchaseOrder' => $order->id]), [
+            'purchase_order_item_id' => $line->id,
+            'warehouse_id' => $warehouse->id,
+            'warehouse_location_id' => $location->id,
+            'quantity' => 3,
+        ])
+        ->assertRedirect($indexUrl);
+
+    $returnData = [
+        'purchase_order_item_id' => $line->id,
+        'warehouse_id' => $warehouse->id,
+        'warehouse_location_id' => $location->id,
+        'quantity' => 2,
+        'reason' => 'Damaged packaging',
+    ];
+    $returnUrl = route('purchase-orders.return', ['current_team' => $team->slug, 'purchaseOrder' => $order->id]);
+
+    $this->actingAs($owner)->from($indexUrl)->post($returnUrl, $returnData)->assertRedirect($indexUrl);
+    $movement = StockMovement::query()->where('purchase_order_item_id', $line->id)->sole();
+    expect($movement->type->value)->toBe('issue')
+        ->and($movement->quantity)->toBe(-2)
+        ->and($movement->reference)->toBe($order->number())
+        ->and($movement->reason)->toBe('Supplier return: Damaged packaging')
+        ->and($item->fresh()->quantity)->toBe(1)
+        ->and($line->fresh()->received_quantity)->toBe(3)
+        ->and($order->events()->latest('id')->value('note'))->toContain('Returned 2 × Returnable item');
+
+    $this->actingAs($owner)
+        ->from($indexUrl)
+        ->post($returnUrl, [...$returnData, 'quantity' => 2])
+        ->assertSessionHasErrors('quantity');
+
+    expect(StockMovement::query()->where('purchase_order_item_id', $line->id)->count())->toBe(1)
+        ->and($item->fresh()->quantity)->toBe(1);
+});
+
 test('a creator can cancel their own draft and the reason is retained in the order history', function () {
     $user = User::factory()->create();
     $team = $user->personalTeam();

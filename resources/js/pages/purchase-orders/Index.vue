@@ -29,6 +29,7 @@ type PurchaseOrderLine = {
     sku: string;
     quantity: number;
     receivedQuantity: number;
+    returnedQuantity: number;
     unitCost: number;
     lineTotal: number;
 };
@@ -87,6 +88,7 @@ defineOptions({
 const page = usePage();
 const createOpen = ref(false);
 const receiveOpen = ref(false);
+const returning = ref(false);
 const saving = ref(false);
 const formError = ref('');
 const receivingError = ref('');
@@ -102,6 +104,7 @@ const receipt = ref({
     warehouse_id: '',
     warehouse_location_id: '',
     quantity: 1,
+    reason: '',
 });
 
 const currency = new Intl.NumberFormat(undefined, {
@@ -205,6 +208,7 @@ function cancelOrder(order: PurchaseOrder): void {
 }
 
 function openReceive(order: PurchaseOrder, line: PurchaseOrderLine): void {
+    returning.value = false;
     selectedOrder.value = order;
     selectedLine.value = line;
     receipt.value = {
@@ -213,9 +217,19 @@ function openReceive(order: PurchaseOrder, line: PurchaseOrderLine): void {
             ? String(props.warehouses[0].locations[0].id)
             : '',
         quantity: Math.max(1, line.quantity - line.receivedQuantity),
+        reason: '',
     };
     receivingError.value = '';
     receiveOpen.value = true;
+}
+
+function openReturn(order: PurchaseOrder, line: PurchaseOrderLine): void {
+    openReceive(order, line);
+    returning.value = true;
+    receipt.value.quantity = Math.max(
+        1,
+        line.receivedQuantity - line.returnedQuantity,
+    );
 }
 
 function changeReceiptWarehouse(): void {
@@ -233,10 +247,11 @@ function receiveOrderLine(): void {
     saving.value = true;
     receivingError.value = '';
     router.post(
-        `${url}/receive`,
+        `${url}/${returning.value ? 'return' : 'receive'}`,
         {
             purchase_order_item_id: line.id,
             ...receipt.value,
+            ...(returning.value ? { reason: receipt.value.reason } : {}),
         },
         {
             preserveScroll: true,
@@ -413,6 +428,11 @@ function statusVariant(
                                 <td class="px-3 py-2">
                                     {{ line.receivedQuantity }} /
                                     {{ line.quantity }}
+                                    <span v-if="line.returnedQuantity">
+                                        ·
+                                        {{ line.returnedQuantity }}
+                                        returned</span
+                                    >
                                 </td>
                                 <td class="px-3 py-2 text-right">
                                     {{ currency.format(line.unitCost) }}
@@ -436,6 +456,23 @@ function statusVariant(
                                         @click="openReceive(order, line)"
                                     >
                                         <Truck class="size-4" /> Receive
+                                    </Button>
+                                    <Button
+                                        v-if="
+                                            canReceive &&
+                                            line.receivedQuantity >
+                                                line.returnedQuantity &&
+                                            [
+                                                'partially_received',
+                                                'received',
+                                                'cancelled',
+                                            ].includes(order.status)
+                                        "
+                                        variant="outline"
+                                        size="sm"
+                                        @click="openReturn(order, line)"
+                                    >
+                                        Return
                                     </Button>
                                 </td>
                             </tr>
@@ -652,13 +689,21 @@ function statusVariant(
                 <form class="grid gap-5" @submit.prevent="receiveOrderLine">
                     <DialogHeader class="text-left"
                         ><DialogTitle
-                            >Receive {{ selectedLine?.name }}</DialogTitle
+                            >{{ returning ? 'Return' : 'Receive' }}
+                            {{ selectedLine?.name }}</DialogTitle
                         ><DialogDescription
-                            >Record received stock against
+                            >{{
+                                returning
+                                    ? 'Record a supplier return against'
+                                    : 'Record received stock against'
+                            }}
                             {{ selectedOrder?.number }}. Remaining:
                             {{
-                                (selectedLine?.quantity ?? 0) -
-                                (selectedLine?.receivedQuantity ?? 0)
+                                returning
+                                    ? (selectedLine?.receivedQuantity ?? 0) -
+                                      (selectedLine?.returnedQuantity ?? 0)
+                                    : (selectedLine?.quantity ?? 0) -
+                                      (selectedLine?.receivedQuantity ?? 0)
                             }}.</DialogDescription
                         ></DialogHeader
                     >
@@ -700,18 +745,34 @@ function statusVariant(
                             </select>
                         </div>
                         <div class="grid gap-2">
-                            <Label for="po-receive-quantity"
-                                >Quantity received</Label
+                            <Label for="po-receive-quantity">{{
+                                returning
+                                    ? 'Quantity returned'
+                                    : 'Quantity received'
+                            }}</Label
                             ><Input
                                 id="po-receive-quantity"
                                 v-model.number="receipt.quantity"
                                 type="number"
                                 min="1"
                                 :max="
-                                    (selectedLine?.quantity ?? 1) -
-                                    (selectedLine?.receivedQuantity ?? 0)
+                                    returning
+                                        ? (selectedLine?.receivedQuantity ??
+                                              1) -
+                                          (selectedLine?.returnedQuantity ?? 0)
+                                        : (selectedLine?.quantity ?? 1) -
+                                          (selectedLine?.receivedQuantity ?? 0)
                                 "
                                 required
+                            />
+                        </div>
+                        <div v-if="returning" class="grid gap-2">
+                            <Label for="po-return-reason">Return reason</Label>
+                            <Input
+                                id="po-return-reason"
+                                v-model="receipt.reason"
+                                required
+                                maxlength="2000"
                             />
                         </div>
                     </div>
@@ -732,7 +793,11 @@ function statusVariant(
                             type="submit"
                             :disabled="saving || !warehouses.length"
                             >{{
-                                saving ? 'Recording…' : 'Record receipt'
+                                saving
+                                    ? 'Recording…'
+                                    : returning
+                                      ? 'Record return'
+                                      : 'Record receipt'
                             }}</Button
                         ></DialogFooter
                     >
