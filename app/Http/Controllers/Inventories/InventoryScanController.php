@@ -105,6 +105,7 @@ class InventoryScanController extends Controller
         }
 
         return DB::transaction(function () use ($request, $team, $validated, $recordStockMovement, $item, $warehouse, $location, $itemCode, $binCode): JsonResponse {
+            $item = $team->inventoryItems()->whereKey($item->id)->lockForUpdate()->firstOrFail();
             $existingScan = InventoryScanEvent::query()
                 ->where('team_id', $team->id)
                 ->where('scan_id', $validated['scan_id'])

@@ -6,6 +6,7 @@ use App\Enums\StockMovementType;
 use App\Models\InventoryItem;
 use App\Models\StockLevel;
 use App\Models\StockMovement;
+use App\Models\StockReservation;
 use App\Models\Team;
 use App\Models\User;
 use App\Models\Warehouse;
@@ -25,7 +26,7 @@ class RecordStockMovement
         WarehouseLocation $location,
         StockMovementType $type,
         int $quantity,
-        float $unitCost = 0,
+        float|string $unitCost = 0,
         ?string $reference = null,
         ?string $reason = null,
         ?User $user = null,
@@ -49,7 +50,10 @@ class RecordStockMovement
                 ->lockForUpdate()
                 ->firstOrFail();
 
-            $level = StockLevel::query()->firstOrCreate(
+            $warehouse = Warehouse::query()->whereKey($warehouse->id)->lockForUpdate()->firstOrFail();
+            $location = $warehouse->locations()->whereKey($location->id)->lockForUpdate()->firstOrFail();
+
+            $level = StockLevel::query()->lockForUpdate()->firstOrCreate(
                 [
                     'inventory_item_id' => $item->id,
                     'warehouse_id' => $warehouse->id,
@@ -63,6 +67,18 @@ class RecordStockMovement
 
             $quantityBefore = $level->quantity;
             $quantityAfter = $quantityBefore + $quantity;
+
+            $reservedQuantity = (int) StockReservation::query()
+                ->where('inventory_item_id', $item->id)
+                ->where('warehouse_id', $warehouse->id)
+                ->where('warehouse_location_id', $location->id)
+                ->lockForUpdate()->get()->sum('remaining_quantity');
+
+            if ($quantity < 0 && $quantityAfter < $reservedQuantity) {
+                throw ValidationException::withMessages([
+                    'amount' => sprintf('Only %d unreserved unit(s) are available in this bin.', max(0, $quantityBefore - $reservedQuantity)),
+                ]);
+            }
 
             if ($quantityAfter < 0) {
                 throw ValidationException::withMessages([

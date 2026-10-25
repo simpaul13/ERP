@@ -26,13 +26,13 @@ import {
     SidebarMenuItem,
 } from '@/components/ui/sidebar';
 import { dashboard } from '@/routes';
+import { index as salesOrdersIndex } from '@/routes/sales-orders';
 import type { NavItem } from '@/types';
 
 const page = usePage();
 
 const modules = [
     { title: 'Purchasing', icon: ShoppingCart },
-    { title: 'Sales', icon: ReceiptText },
     { title: 'Finance', icon: BadgeDollarSign },
     { title: 'Reports & Operations', icon: ChartNoAxesCombined },
 ];
@@ -81,6 +81,13 @@ const mainNavItems = computed<NavItem[]>(() => [
             ? `/${page.props.currentTeam.slug}/purchase-orders`
             : '/purchase-orders',
         icon: ShoppingCart,
+    },
+    {
+        title: 'Sales',
+        href: page.props.currentTeam
+            ? salesOrdersIndex(page.props.currentTeam.slug).url
+            : '/',
+        icon: ReceiptText,
     },
 ]);
 </script>

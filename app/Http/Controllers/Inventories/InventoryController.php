@@ -345,37 +345,40 @@ class InventoryController extends Controller
     public function destroy(Request $request, string $currentTeamSlug, InventoryItem $inventoryItem): RedirectResponse
     {
         $team = $request->user()->currentTeam;
-        $item = $team->inventoryItems()->findOrFail($inventoryItem->id);
 
-        Gate::authorize('delete', $item);
+        DB::transaction(function () use ($team, $request, $inventoryItem): void {
+            $item = $team->inventoryItems()->whereKey($inventoryItem->id)->lockForUpdate()->firstOrFail();
 
-        if ($item->quantity > 0) {
-            throw ValidationException::withMessages([
-                'inventory_item' => 'Move all remaining stock out before deleting this item.',
-            ]);
-        }
+            Gate::authorize('delete', $item);
 
-        $images = collect($item->images ?? []);
-        $imageNames = $images->pluck('name')->all();
-        $imagePaths = $images
-            ->map(fn (array $image): ?string => $image['path'] ?? $this->storagePathFromUrl($image['src']))
-            ->filter()
-            ->values()
-            ->all();
+            $images = collect($item->images ?? []);
+            $imageNames = $images->pluck('name')->all();
+            $imagePaths = $images
+                ->map(fn (array $image): ?string => $image['path'] ?? $this->storagePathFromUrl($image['src']))
+                ->filter()
+                ->values()
+                ->all();
 
-        Storage::disk('public')->delete($imagePaths);
+            if (! $item->delete()) {
+                throw ValidationException::withMessages([
+                    'inventory_item' => 'The inventory item could not be deleted.',
+                ]);
+            }
 
-        activity('inventory')
-            ->causedBy($request->user())
-            ->withProperties([
-                'team_id' => $team->id,
-                'item_name' => $item->name,
-                'sku' => $item->sku,
-                'image_names' => $imageNames,
-            ])
-            ->log('Inventory Deleted');
+            activity('inventory')
+                ->causedBy($request->user())
+                ->withProperties([
+                    'team_id' => $team->id,
+                    'item_name' => $item->name,
+                    'sku' => $item->sku,
+                    'image_names' => $imageNames,
+                ])
+                ->log('Inventory Deleted');
 
-        $item->delete();
+            DB::afterCommit(static function () use ($imagePaths): void {
+                Storage::disk('public')->delete($imagePaths);
+            });
+        });
 
         return back();
     }

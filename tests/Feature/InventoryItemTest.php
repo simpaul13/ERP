@@ -7,6 +7,7 @@ use App\Models\InventoryItem;
 use App\Models\Team;
 use App\Models\User;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\Storage;
 use Inertia\Testing\AssertableInertia as Assert;
 use Spatie\Activitylog\Models\Activity;
@@ -284,6 +285,44 @@ test('deleting an inventory item removes it and its stored images', function () 
         ->and($activity->getProperty('sku'))->toBe('BX-2048')
         ->and($activity->getProperty('image_names'))->toBe(['carton.png'])
         ->and($activity->getProperty('team_id'))->toBe($team->id);
+});
+
+test('guarded deletion preserves images and audit history when the controller stock snapshot is stale', function () {
+    Storage::fake('public');
+    $user = User::factory()->create();
+    $team = $user->personalTeam();
+    $path = 'inventory/'.$team->id.'/retained-carton.png';
+    Storage::disk('public')->put($path, 'retained image');
+    $item = createInventoryItem($team, ['images' => [[
+        'id' => fake()->uuid(), 'name' => 'retained-carton.png',
+        'src' => Storage::disk('public')->url($path), 'path' => $path,
+    ]]], 1, user: $user);
+    $originalGate = Gate::getFacadeRoot();
+    Gate::swap(clone $originalGate);
+    $staleSnapshotApplied = false;
+
+    try {
+        /** Simulate stock arriving after the controller read; the model guard must use the stored quantity. */
+        Gate::after(function (User $user, string $ability, ?bool $result, array $arguments) use ($item, &$staleSnapshotApplied): void {
+            $snapshot = $arguments[0] ?? null;
+            if ($ability === 'delete' && $snapshot instanceof InventoryItem && $snapshot->id === $item->id) {
+                $snapshot->quantity = 0;
+                $staleSnapshotApplied = true;
+            }
+        });
+        $this->actingAs($user)->deleteJson(route('inventories.destroy', [
+            'current_team' => $team->slug, 'inventoryItem' => $item->id,
+        ]))->assertUnprocessable()->assertJsonValidationErrors('inventory_item');
+    } finally {
+        Gate::swap($originalGate);
+    }
+
+    expect($staleSnapshotApplied)->toBeTrue()
+        ->and($item->fresh()->quantity)->toBe(1)
+        ->and($item->fresh()->images[0]['path'])->toBe($path)
+        ->and($item->stockLevels()->sum('quantity'))->toBe(1)
+        ->and(Activity::query()->where('description', 'Inventory Deleted')->exists())->toBeFalse();
+    Storage::disk('public')->assertExists($path);
 });
 
 test('receiving stock persists the quantity and logs before and after', function () {

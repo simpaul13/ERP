@@ -11,6 +11,8 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\ValidationException;
 
 /**
  * @property int $id
@@ -32,6 +34,20 @@ class Warehouse extends Model
 {
     /** @use HasFactory<WarehouseFactory> */
     use HasFactory, SoftDeletes;
+
+    public function delete(): ?bool
+    {
+        return DB::transaction(function (): ?bool {
+            static::query()->whereKey($this->getKey())->lockForUpdate()->firstOrFail();
+
+            if ($this->stockLevels()->where('quantity', '>', 0)->exists()
+                || StockReservation::query()->where('warehouse_id', $this->id)->where('remaining_quantity', '>', 0)->exists()) {
+                throw ValidationException::withMessages(['warehouse' => 'Move all stock and release active sales reservations before archiving this warehouse.']);
+            }
+
+            return parent::delete();
+        });
+    }
 
     /**
      * Bootstrap the model and its traits.

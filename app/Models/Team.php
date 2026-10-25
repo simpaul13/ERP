@@ -158,6 +158,12 @@ class Team extends Model
         return $this->hasMany(PurchaseOrder::class);
     }
 
+    /** @return HasMany<SalesOrder, $this> */
+    public function salesOrders(): HasMany
+    {
+        return $this->hasMany(SalesOrder::class);
+    }
+
     /**
      * Get the team's default warehouse.
      */

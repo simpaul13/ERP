@@ -302,6 +302,37 @@ describe('inventory module', () => {
     );
 
     test(
+        'blocked deletion retains a stocked inventory item',
+        { session: 'inventory-user' },
+        async ({ screen, browser }) => {
+            const sku =
+                `E2E-KEEP-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`.toUpperCase();
+            const itemName = `E2E Retained Item ${sku}`;
+            await createInventoryItem(screen, sku, itemName, 1);
+            await expect(browser).toHaveURL(
+                new RegExp(
+                    `/e2e-test-user/inventories\\?(?:[^#]*&)?search=${encodeURIComponent(sku)}(?:&|$)`,
+                ),
+            );
+            await expect(
+                screen.getByRole('row').filter({ hasText: sku }),
+            ).toBeVisible();
+            await tapItemMenuAction(screen, itemName, 'Delete item');
+            const dialog = screen.getByRole('dialog', 'Delete inventory item');
+            await dialog.getByRole('button', 'Delete item').tap();
+            await expect(dialog.getByRole('alert')).toContainText(
+                'Move all remaining stock out before deleting this item.',
+            );
+            await dialog.getByRole('button', 'Cancel').tap();
+            await expect(dialog).toHaveCount(0);
+            await expect(
+                screen.getByRole('row').filter({ hasText: sku }),
+            ).toBeVisible();
+            await expect(screen.getByText(itemName)).toBeVisible();
+        },
+    );
+
+    test(
         'shows recent inventory activity',
         { session: 'inventory-user' },
         async ({ screen }) => {

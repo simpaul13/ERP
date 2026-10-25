@@ -8,6 +8,8 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\ValidationException;
 
 /**
  * @property int $id
@@ -29,6 +31,26 @@ use Illuminate\Support\Carbon;
 #[Fillable(['team_id', 'sku', 'name', 'category', 'quantity', 'reorder_point', 'unit_cost', 'images', 'main_image_id'])]
 class InventoryItem extends Model
 {
+    /**
+     * Serialize deletion with reservation creation and all stock mutations.
+     */
+    public function delete(): ?bool
+    {
+        return DB::transaction(function (): ?bool {
+            $item = static::query()->whereKey($this->getKey())->lockForUpdate()->first();
+
+            if ($item !== null && $item->quantity > 0) {
+                throw ValidationException::withMessages(['inventory_item' => 'Move all remaining stock out before deleting this item.']);
+            }
+
+            if ($item !== null && StockReservation::query()->where('inventory_item_id', $item->id)->where('remaining_quantity', '>', 0)->exists()) {
+                throw ValidationException::withMessages(['inventory_item' => 'Release all active sales reservations before deleting this item.']);
+            }
+
+            return parent::delete();
+        });
+    }
+
     /**
      * Get the team that owns the inventory item.
      *
