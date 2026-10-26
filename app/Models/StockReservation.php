@@ -19,9 +19,11 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  * @property int $remaining_quantity
  * @property string $warehouse_name
  * @property string $location_name
+ * @property string|null $idempotency_key
+ * @property string|null $payload_hash
  * @property-read SalesOrderItem $salesOrderItem
  */
-#[Fillable(['sales_order_id', 'sales_order_item_id', 'inventory_item_id', 'warehouse_id', 'warehouse_location_id', 'quantity', 'remaining_quantity', 'warehouse_name', 'location_name'])]
+#[Fillable(['sales_order_id', 'sales_order_item_id', 'inventory_item_id', 'warehouse_id', 'warehouse_location_id', 'quantity', 'remaining_quantity', 'warehouse_name', 'location_name', 'idempotency_key', 'payload_hash'])]
 class StockReservation extends Model
 {
     /** @use HasFactory<StockReservationFactory> */

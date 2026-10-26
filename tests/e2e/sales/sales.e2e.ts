@@ -144,6 +144,90 @@ async function reserveSalesStock(
     ).toContainText(`${quantity} remaining of ${quantity} reserved`);
 }
 
+async function reserveSalesStockWithRetry(
+    screen: Screen,
+    browser: Browser,
+    itemName: string,
+    quantity: number,
+): Promise<void> {
+    await screen.getByRole('button', `Reserve stock for ${itemName}`).tap();
+    const dialog = screen.getByRole('dialog', 'Reserve stock');
+    await dialog
+        .getByLabel('Warehouse')
+        .selectOption({ label: 'Main warehouse' });
+    await dialog.getByLabel('Bin').selectOption({ label: 'Default bin' });
+    await dialog.getByLabel('Quantity').fill(String(quantity));
+
+    let attempts = 0;
+    let capturedRequest: {
+        url: string;
+        headers: Record<string, string>;
+        postData: string;
+    } | null = null;
+    const reservePattern = '**/e2e-test-user/sales-orders/*/reserve';
+    await browser.route(reservePattern, async (route) => {
+        attempts += 1;
+        if (attempts === 1) {
+            await route.abort();
+            return;
+        }
+        capturedRequest = {
+            url: route.request.url,
+            headers: { ...route.request.headers },
+            postData: route.request.postData ?? '',
+        };
+        await route.continue();
+    });
+
+    await dialog.getByRole('button', 'Reserve stock').tap();
+    await expect(dialog.getByText('Result not confirmed')).toBeVisible();
+    await dialog.getByRole('button', 'Close').last().tap();
+    await expect(dialog).toHaveCount(0);
+    await browser.reload();
+    await expect(
+        screen.getByText('Operations awaiting confirmation'),
+    ).toBeVisible();
+    await screen
+        .getByRole('button', 'Review unresolved reserve', { exact: false })
+        .tap();
+    const retryDialog = screen.getByRole('dialog', 'Reserve stock');
+    await retryDialog.getByRole('button', 'Retry unchanged operation').tap();
+    await expect(retryDialog).toHaveCount(0);
+    await browser.unroute(reservePattern);
+
+    if (!capturedRequest) {
+        throw new Error('The reservation retry did not reach the server.');
+    }
+    const replayStatus = await browser.evaluate(async (request) => {
+        const headers: Record<string, string> = {};
+        for (const name of [
+            'accept',
+            'content-type',
+            'x-inertia',
+            'x-inertia-version',
+            'x-requested-with',
+            'x-xsrf-token',
+        ]) {
+            const value = request.headers[name];
+            if (value) headers[name] = value;
+        }
+        const response = await fetch(request.url, {
+            method: 'POST',
+            headers,
+            body: request.postData,
+            credentials: 'same-origin',
+        });
+        return response.status;
+    }, capturedRequest);
+    expect(replayStatus).toBe(200);
+    await browser.reload();
+    const reservations = screen.getByRole('region', 'Stock reservations');
+    await expect(reservations).toContainText(
+        `${quantity} remaining of ${quantity} reserved`,
+    );
+    await expect(reservations.getByRole('article')).toHaveCount(1);
+}
+
 describe('sales order workflow', () => {
     test(
         'creates reserves fulfills returns and tracks a peso refund',
@@ -367,6 +451,27 @@ describe('sales order workflow', () => {
             await expect(
                 screen.getByRole('row').filter({ hasText: sku }),
             ).toBeVisible();
+        },
+    );
+
+    test(
+        'recovers an uncertain partial reservation and replays it without a second hold',
+        { session: 'sales-user', timeout: 180_000 },
+        async ({ app, screen, browser }) => {
+            const suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+            const sku = `E2E-REPLAY-${suffix}`.toUpperCase();
+            const itemName = `E2E Replay Item ${suffix}`;
+            const customer = `E2E Replay Buyer ${suffix}`;
+
+            await app.open('/e2e-test-user/inventories');
+            await createSalesInventory(screen, browser, itemName, sku, 10);
+            await screen.getByRole('link', 'Sales', { exact: true }).tap();
+            await expect(
+                screen.getByRole('heading', 'Sales orders'),
+            ).toBeVisible();
+            await createSalesDraft(screen, customer, itemName, sku, 8);
+
+            await reserveSalesStockWithRetry(screen, browser, itemName, 2);
         },
     );
 

@@ -105,7 +105,7 @@ function newOperationData() {
 }
 
 type OperationData = ReturnType<typeof newOperationData>;
-type RetryableOperation = 'fulfill' | 'return' | 'refund';
+type RetryableOperation = 'reserve' | 'fulfill' | 'return' | 'refund';
 type OperationAttempt = {
     action: RetryableOperation;
     targetId: number;
@@ -137,7 +137,9 @@ function isStoredAttempt(
 ): value is OperationAttempt {
     if (
         !isRecord(value) ||
-        !['fulfill', 'return', 'refund'].includes(String(value.action)) ||
+        !['reserve', 'fulfill', 'return', 'refund'].includes(
+            String(value.action),
+        ) ||
         !Number.isSafeInteger(value.targetId) ||
         Number(value.targetId) < 1 ||
         key !== `${value.action}:${value.targetId}` ||
@@ -158,6 +160,7 @@ function isStoredAttempt(
                 (typeof initial !== 'number' || Number.isFinite(data[field])),
         );
     const targetField = {
+        reserve: 'sales_order_item_id',
         fulfill: 'reservation_id',
         return: 'fulfillment_id',
         refund: 'sales_return_id',
@@ -180,7 +183,7 @@ function loadAttempts(storageKey: string | null): void {
     attempts.value = {};
     if (typeof window === 'undefined' || !storageKey) {
         attemptStorageError.value =
-            'Retry protection requires a signed-in user and browser session storage. No fulfillment, return, or refund will be sent without it.';
+            'Retry protection requires a signed-in user and browser session storage. No reservation, fulfillment, return, or refund will be sent without it.';
         return;
     }
     let stored: string | null;
@@ -392,11 +395,12 @@ function openOperation(action: Operation, id = 0): void {
 }
 
 function isRetryableOperation(action: Operation): action is RetryableOperation {
-    return ['fulfill', 'return', 'refund'].includes(action);
+    return ['reserve', 'fulfill', 'return', 'refund'].includes(action);
 }
 
 function attemptTarget(action: RetryableOperation, id: number): string {
     const labels = {
+        reserve: 'Order line',
         fulfill: 'Reservation',
         return: 'Fulfillment',
         refund: 'Return',
@@ -425,6 +429,7 @@ function operationPayload(action: Operation, data: OperationData) {
     switch (action) {
         case 'reserve':
             return {
+                idempotency_key: data.idempotency_key,
                 sales_order_item_id: data.sales_order_item_id,
                 warehouse_id: data.warehouse_id,
                 warehouse_location_id: data.warehouse_location_id,
@@ -1122,7 +1127,8 @@ function returnName(id: number): string {
                                 operation abandons the original retry key and
                                 uses a new one. If the earlier operation
                                 completed, the new submission can record an
-                                additional fulfillment, return, or refund.
+                                additional reservation, fulfillment, return, or
+                                refund.
                             </p>
                             <div class="mt-3 flex flex-wrap gap-2">
                                 <Button

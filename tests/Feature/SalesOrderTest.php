@@ -9,6 +9,8 @@ use App\Models\SalesOrder;
 use App\Models\SalesOrderItem;
 use App\Models\SalesRefund;
 use App\Models\SalesReturn;
+use App\Models\StockLevel;
+use App\Models\StockMovement;
 use App\Models\StockReservation;
 use App\Models\User;
 use Illuminate\Database\QueryException;
@@ -40,8 +42,9 @@ beforeEach(function () {
     $this->order = SalesOrder::query()->sole();
     $response->assertRedirect(($this->salesUrl)('show'));
     $this->line = $this->order->items()->sole();
-    $this->reserveSales = function (int $quantity = 5): StockReservation {
+    $this->reserveSales = function (int $quantity = 5, ?string $idempotencyKey = null): StockReservation {
         $this->post(($this->salesUrl)('reserve'), [
+            'idempotency_key' => $idempotencyKey ?? fake()->uuid(),
             'sales_order_item_id' => $this->line->id,
             'warehouse_id' => $this->warehouse->id,
             'warehouse_location_id' => $this->location->id,
@@ -100,6 +103,108 @@ test('invalid multi-line creation rolls back the entire draft', function () {
     $this->assertDatabaseCount('sales_orders', 1);
     $this->assertDatabaseCount('sales_order_items', 1);
     expect($this->item->fresh()->quantity)->toBe(10);
+});
+
+test('replaying a stock reservation request keeps one hold and a fresh key makes a deliberate hold', function () {
+    $this->line->update(['quantity' => 8]);
+    $payload = [
+        'idempotency_key' => 'e29a6315-7691-4aed-a8a4-95e3719bcdaa',
+        'sales_order_item_id' => $this->line->id,
+        'warehouse_id' => $this->warehouse->id,
+        'warehouse_location_id' => $this->location->id,
+        'quantity' => 2,
+    ];
+
+    $this->post(($this->salesUrl)('reserve'), $payload)->assertRedirect()->assertSessionHasNoErrors();
+    $this->post(($this->salesUrl)('reserve'), $payload)->assertRedirect()->assertSessionHasNoErrors();
+
+    expect(StockReservation::query()->count())->toBe(1)
+        ->and(StockReservation::query()->sum('remaining_quantity'))->toBe(2)
+        ->and($this->item->fresh()->quantity)->toBe(10)
+        ->and(StockLevel::query()->where('inventory_item_id', $this->item->id)->where('warehouse_location_id', $this->location->id)->value('quantity'))->toBe(10)
+        ->and(StockMovement::query()->where('inventory_item_id', $this->item->id)->count())->toBe(1)
+        ->and($this->order->events()->count())->toBe(2);
+
+    $this->postJson(($this->salesUrl)('reserve'), [...$payload, 'quantity' => 3])
+        ->assertUnprocessable()->assertJsonValidationErrors('idempotency_key');
+
+    $this->postJson(($this->salesUrl)('reserve'), [...$payload, 'idempotency_key' => 'invalid'])
+        ->assertUnprocessable()->assertJsonValidationErrors('idempotency_key');
+    $this->postJson(($this->salesUrl)('reserve'), [...$payload, 'idempotency_key' => null])
+        ->assertUnprocessable()->assertJsonValidationErrors('idempotency_key');
+    $missingKeyPayload = $payload;
+    unset($missingKeyPayload['idempotency_key']);
+    $this->postJson(($this->salesUrl)('reserve'), $missingKeyPayload)
+        ->assertUnprocessable()->assertJsonValidationErrors('idempotency_key');
+
+    $retryKey = 'e29a6315-7691-4aed-a8a4-95e3719bcdbc';
+    $this->postJson(($this->salesUrl)('reserve'), [
+        ...$payload,
+        'idempotency_key' => $retryKey,
+        'quantity' => 9,
+    ])->assertUnprocessable()->assertJsonValidationErrors('quantity');
+    expect(StockReservation::query()->count())->toBe(1)
+        ->and(StockReservation::query()->sum('remaining_quantity'))->toBe(2)
+        ->and($this->order->events()->count())->toBe(2);
+    $this->post(($this->salesUrl)('reserve'), [
+        ...$payload,
+        'idempotency_key' => $retryKey,
+        'quantity' => 1,
+    ])->assertRedirect()->assertSessionHasNoErrors();
+    expect(StockReservation::query()->count())->toBe(2)
+        ->and(StockReservation::query()->sum('remaining_quantity'))->toBe(3)
+        ->and($this->order->events()->count())->toBe(3);
+
+    $this->post(($this->salesUrl)('reserve'), [
+        ...$payload,
+        'idempotency_key' => 'e29a6315-7691-4aed-a8a4-95e3719bcdbb',
+    ])->assertRedirect()->assertSessionHasNoErrors();
+    expect(StockReservation::query()->count())->toBe(3)
+        ->and(StockReservation::query()->sum('remaining_quantity'))->toBe(5)
+        ->and(StockLevel::query()->where('inventory_item_id', $this->item->id)->where('warehouse_location_id', $this->location->id)->value('quantity'))->toBe(10)
+        ->and(StockMovement::query()->where('inventory_item_id', $this->item->id)->count())->toBe(1)
+        ->and($this->order->events()->count())->toBe(4);
+
+    $member = User::factory()->create();
+    $this->team->members()->attach($member, ['role' => TeamRole::Member->value]);
+    $member->update(['current_team_id' => $this->team->id]);
+    $member->unsetRelation('currentTeam');
+    $this->actingAs($member)
+        ->post(($this->salesUrl)('reserve'), $payload)
+        ->assertForbidden();
+
+    $this->actingAs($this->owner)->post(($this->salesUrl)('cancel'), ['reason' => 'No longer needed'])
+        ->assertRedirect()->assertSessionHasNoErrors();
+    $this->post(($this->salesUrl)('reserve'), $payload)->assertRedirect()->assertSessionHasNoErrors();
+
+    expect(StockReservation::query()->count())->toBe(3)
+        ->and(StockReservation::query()->sum('remaining_quantity'))->toBe(0)
+        ->and($this->order->events()->count())->toBe(5)
+        ->and($this->item->fresh()->quantity)->toBe(10)
+        ->and(StockLevel::query()->where('inventory_item_id', $this->item->id)->where('warehouse_location_id', $this->location->id)->value('quantity'))->toBe(10)
+        ->and(StockMovement::query()->where('inventory_item_id', $this->item->id)->count())->toBe(1);
+});
+
+test('replaying a reservation after fulfillment is a harmless success', function () {
+    $reservation = ($this->reserveSales)(5, 'e29a6315-7691-4aed-a8a4-95e3719bcdb9');
+    $this->post(($this->salesUrl)('fulfill'), [
+        'idempotency_key' => fake()->uuid(), 'reservation_id' => $reservation->id, 'quantity' => 5,
+    ])->assertRedirect()->assertSessionHasNoErrors();
+    $events = $this->order->events()->count();
+
+    $this->post(($this->salesUrl)('reserve'), [
+        'idempotency_key' => $reservation->idempotency_key,
+        'sales_order_item_id' => $this->line->id,
+        'warehouse_id' => $this->warehouse->id,
+        'warehouse_location_id' => $this->location->id,
+        'quantity' => 5,
+    ])->assertRedirect()->assertSessionHasNoErrors();
+
+    expect($this->order->fresh()->status->value)->toBe('fulfilled')
+        ->and(StockReservation::query()->count())->toBe(1)
+        ->and($reservation->fresh()->remaining_quantity)->toBe(0)
+        ->and($this->order->events()->count())->toBe($events)
+        ->and($this->item->fresh()->quantity)->toBe(5);
 });
 
 test('reservation leaves on-hand unchanged and partial fulfillment consumes only its own reserved quantity', function () {
@@ -348,6 +453,7 @@ test('reservation validation rejects unrelated lines locations and excess quanti
     ]);
     $foreignWarehouse = User::factory()->create()->personalTeam()->defaultWarehouse();
     $payload = [
+        'idempotency_key' => 'e29a6315-7691-4aed-a8a4-95e3719bcdaa',
         'sales_order_item_id' => $this->line->id, 'warehouse_id' => $this->warehouse->id,
         'warehouse_location_id' => $this->location->id, 'quantity' => 1,
     ];
@@ -382,7 +488,26 @@ test('sales orders are not exposed through a different team route', function () 
     $this->post(route('sales-orders.cancel', [
         'current_team' => $otherTeam->slug, 'salesOrder' => $this->order->id,
     ]), ['reason' => 'Wrong team'])->assertNotFound();
-    $this->assertDatabaseHas('sales_orders', ['id' => $this->order->id, 'status' => 'draft']);
+
+    $payload = [
+        'idempotency_key' => 'e29a6315-7691-4aed-a8a4-95e3719bcdbd',
+        'sales_order_item_id' => $this->line->id,
+        'warehouse_id' => $this->warehouse->id,
+        'warehouse_location_id' => $this->location->id,
+        'quantity' => 1,
+    ];
+    $this->actingAs($this->owner)
+        ->post(($this->salesUrl)('reserve'), $payload)
+        ->assertRedirect()->assertSessionHasNoErrors();
+    $this->actingAs($otherOwner)
+        ->post(route('sales-orders.reserve', [
+            'current_team' => $otherTeam->slug,
+            'salesOrder' => $this->order->id,
+        ]), $payload)
+        ->assertNotFound();
+
+    $this->assertDatabaseHas('sales_orders', ['id' => $this->order->id, 'status' => 'reserved']);
+    $this->assertDatabaseCount('stock_reservations', 1);
 });
 
 test('members can create view and cancel their own drafts but cannot perform operational mutations', function () {

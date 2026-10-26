@@ -174,12 +174,14 @@ class SalesOrderController extends Controller
         $order = $this->teamOrder($request, $salesOrder);
         Gate::authorize('reserve', $order);
         $data = $request->validate([
+            'idempotency_key' => ['required', 'uuid'],
             'sales_order_item_id' => ['required', 'integer', 'min:1'],
             'warehouse_id' => ['required', 'integer', 'min:1'],
             'warehouse_location_id' => ['required', 'integer', 'min:1'],
             'quantity' => ['required', 'integer', 'min:1', 'max:1000000'],
         ]);
         $action->reserve($order, $request->user(), [
+            'idempotency_key' => strtolower($data['idempotency_key']),
             'sales_order_item_id' => (int) $data['sales_order_item_id'],
             'warehouse_id' => (int) $data['warehouse_id'],
             'warehouse_location_id' => (int) $data['warehouse_location_id'],

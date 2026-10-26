@@ -20,11 +20,16 @@ class ManageSalesOrder
 {
     public function __construct(private RecordStockMovement $recordStockMovement) {}
 
-    /** @param array{sales_order_item_id: int, warehouse_id: int, warehouse_location_id: int, quantity: int} $data */
+    /** @param array{idempotency_key: string, sales_order_item_id: int, warehouse_id: int, warehouse_location_id: int, quantity: int} $data */
     public function reserve(SalesOrder $order, User $user, array $data): void
     {
         DB::transaction(function () use ($order, $user, $data): void {
             $order = $this->locked($order, $user, 'reserve');
+            $hash = $this->hash($data);
+            if ($this->replayed($order->reservations()->where('idempotency_key', $data['idempotency_key'])->first(), $hash)) {
+                return;
+            }
+
             $this->requireOpen($order);
             $line = $order->items()->whereKey($data['sales_order_item_id'])->firstOrFail();
             $item = $this->inventory($line);
@@ -56,6 +61,8 @@ class ManageSalesOrder
                 'location_name' => $location->name,
                 'quantity' => $quantity,
                 'remaining_quantity' => $quantity,
+                'idempotency_key' => $data['idempotency_key'],
+                'payload_hash' => $hash,
             ]);
             $status = $order->status === SalesOrderStatus::Draft ? SalesOrderStatus::Reserved : $order->status;
             $this->event($order, $user, "Reserved {$quantity} × {$line->item_name} in {$warehouse->name} / {$location->name}.", $status);
