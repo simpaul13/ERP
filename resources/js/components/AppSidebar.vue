@@ -26,13 +26,14 @@ import {
     SidebarMenuItem,
 } from '@/components/ui/sidebar';
 import { dashboard } from '@/routes';
+import { index as purchaseOrdersIndex } from '@/routes/purchase-orders';
 import { index as salesOrdersIndex } from '@/routes/sales-orders';
+import { index as suppliersIndex } from '@/routes/suppliers';
 import type { NavItem } from '@/types';
 
 const page = usePage();
 
 const modules = [
-    { title: 'Purchasing', icon: ShoppingCart },
     { title: 'Finance', icon: BadgeDollarSign },
     { title: 'Reports & Operations', icon: ChartNoAxesCombined },
 ];
@@ -69,25 +70,28 @@ const mainNavItems = computed<NavItem[]>(() => [
         icon: Warehouse,
     },
     {
-        title: 'Suppliers',
-        href: page.props.currentTeam
-            ? `/${page.props.currentTeam.slug}/suppliers`
-            : '/suppliers',
-        icon: Truck,
-    },
-    {
-        title: 'Purchase orders',
-        href: page.props.currentTeam
-            ? `/${page.props.currentTeam.slug}/purchase-orders`
-            : '/purchase-orders',
-        icon: ShoppingCart,
-    },
-    {
         title: 'Sales',
         href: page.props.currentTeam
             ? salesOrdersIndex(page.props.currentTeam.slug).url
             : '/',
         icon: ReceiptText,
+    },
+]);
+
+const purchasingNavItems = computed<NavItem[]>(() => [
+    {
+        title: 'Purchase orders',
+        href: page.props.currentTeam
+            ? purchaseOrdersIndex(page.props.currentTeam.slug).url
+            : purchaseOrdersIndex().url,
+        icon: ShoppingCart,
+    },
+    {
+        title: 'Suppliers',
+        href: page.props.currentTeam
+            ? suppliersIndex(page.props.currentTeam.slug).url
+            : suppliersIndex().url,
+        icon: Truck,
     },
 ]);
 </script>
@@ -112,7 +116,11 @@ const mainNavItems = computed<NavItem[]>(() => [
         </SidebarHeader>
 
         <SidebarContent>
-            <NavMain :items="mainNavItems" :modules="modules" />
+            <NavMain
+                :items="mainNavItems"
+                :modules="modules"
+                :purchasing-items="purchasingNavItems"
+            />
         </SidebarContent>
 
         <SidebarFooter>

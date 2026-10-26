@@ -1,7 +1,18 @@
 <script setup lang="ts">
 import { Head, router, usePage } from '@inertiajs/vue3';
-import { Check, ClipboardList, Plus, Send, Truck, X } from '@lucide/vue';
-import { computed, ref } from 'vue';
+import {
+    Check,
+    ClipboardList,
+    Pencil,
+    Plus,
+    Search,
+    Send,
+    Truck,
+    Undo2,
+    X,
+} from '@lucide/vue';
+import { computed, ref, watch } from 'vue';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
@@ -14,6 +25,17 @@ import {
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import {
+    index as purchaseOrderIndex,
+    store as storePurchaseOrder,
+    update as updatePurchaseOrder,
+    submit as submitPurchaseOrder,
+    approve as approvePurchaseOrder,
+    cancel as cancelPurchaseOrder,
+    requestRevision as requestPurchaseOrderRevision,
+    receive as receivePurchaseOrder,
+    returnGoods as returnPurchaseOrderGoods,
+} from '@/actions/App/Http/Controllers/Purchases/PurchaseOrderController';
 
 type SupplierOption = { id: number; name: string };
 type ItemOption = { id: number; name: string; sku: string; unitCost: number };
@@ -45,6 +67,15 @@ type PurchaseOrder = {
     id: number;
     number: string;
     supplierName: string;
+    supplierId: number;
+    approvedBy: string | null;
+    canUpdate: boolean;
+    canSubmit: boolean;
+    canApprove: boolean;
+    canRequestRevision: boolean;
+    canCancel: boolean;
+    canReceive: boolean;
+    canReturn: boolean;
     status: string;
     statusLabel: string;
     expectedDate: string;
@@ -64,6 +95,17 @@ type DraftLine = {
 
 const props = defineProps<{
     orders: PurchaseOrder[];
+    pagination: {
+        currentPage: number;
+        lastPage: number;
+        total: number;
+        from: number | null;
+        to: number | null;
+        prevPageUrl: string | null;
+        nextPageUrl: string | null;
+    };
+    filters: { search: string; status: string };
+    statusOptions: { value: string; label: string }[];
     suppliers: SupplierOption[];
     items: ItemOption[];
     warehouses: WarehouseOption[];
@@ -73,25 +115,50 @@ const props = defineProps<{
 }>();
 
 defineOptions({
-    layout: (layoutProps: { currentTeam?: { slug: string } | null }) => ({
-        breadcrumbs: [
-            {
-                title: 'Purchase orders',
-                href: layoutProps.currentTeam
-                    ? `/${layoutProps.currentTeam.slug}/purchase-orders`
-                    : '/purchase-orders',
-            },
-        ],
-    }),
+    layout: (layoutProps: { currentTeam?: { slug: string } | null }) => {
+        const purchaseOrdersUrl = layoutProps.currentTeam
+            ? purchaseOrderIndex({
+                  current_team: layoutProps.currentTeam.slug,
+              }).url
+            : purchaseOrderIndex().url;
+
+        return {
+            breadcrumbs: [
+                { title: 'Purchasing' },
+                { title: 'Purchase orders', href: purchaseOrdersUrl },
+            ],
+        };
+    },
 });
 
 const page = usePage();
 const createOpen = ref(false);
+const editingOrder = ref<PurchaseOrder | null>(null);
+const actionOrder = ref<PurchaseOrder | null>(null);
+const actionKind = ref<'cancel' | 'revision'>('revision');
+const actionOpen = ref(false);
+const actionReason = ref('');
+const actionError = ref('');
+const actionSaving = ref(false);
+const busyOrderId = ref<number | null>(null);
+const listError = ref('');
+const search = ref(props.filters.search);
+const status = ref(props.filters.status);
+const filtering = ref(false);
+
+watch(
+    () => props.filters,
+    (filters) => {
+        search.value = filters.search;
+        status.value = filters.status;
+    },
+);
 const receiveOpen = ref(false);
 const returning = ref(false);
 const saving = ref(false);
 const formError = ref('');
 const receivingError = ref('');
+const idempotencyKey = ref('');
 const selectedOrder = ref<PurchaseOrder | null>(null);
 const selectedLine = ref<PurchaseOrderLine | null>(null);
 const form = ref({
@@ -143,17 +210,77 @@ function teamSlug(): string | null {
     return team?.slug ?? null;
 }
 
-function orderUrl(order: PurchaseOrder): string | null {
+function applyFilters(clear = false): void {
     const slug = teamSlug();
-    return slug ? `/${slug}/purchase-orders/${order.id}` : null;
+    if (!slug || filtering.value) return;
+    if (clear) {
+        search.value = '';
+        status.value = '';
+    }
+    filtering.value = true;
+    listError.value = '';
+    router.get(
+        purchaseOrderIndex({ current_team: slug }).url,
+        {
+            search: search.value.trim() || undefined,
+            status: status.value || undefined,
+        },
+        {
+            preserveState: true,
+            replace: true,
+            onError: (errors) =>
+                (listError.value =
+                    Object.values(errors)[0] ??
+                    'Could not search purchase orders.'),
+            onFinish: () => (filtering.value = false),
+        },
+    );
+}
+
+function visitPage(url: string | null): void {
+    if (!url || filtering.value) return;
+    filtering.value = true;
+    router.get(
+        url,
+        {},
+        {
+            preserveState: true,
+            onFinish: () => (filtering.value = false),
+        },
+    );
 }
 
 function openCreate(): void {
+    editingOrder.value = null;
     form.value = {
         supplier_id: '',
         expected_date: new Date().toISOString().slice(0, 10),
         reference: '',
         items: [newLine()],
+    };
+    formError.value = '';
+    createOpen.value = true;
+}
+
+function openEdit(order: PurchaseOrder): void {
+    editingOrder.value = order;
+    form.value = {
+        supplier_id: props.suppliers.some(
+            (supplier) => supplier.id === order.supplierId,
+        )
+            ? String(order.supplierId)
+            : '',
+        expected_date: order.expectedDate,
+        reference: order.reference ?? '',
+        items: order.items.map((line) => ({
+            inventory_item_id:
+                line.inventoryItemId &&
+                props.items.some((item) => item.id === line.inventoryItemId)
+                    ? String(line.inventoryItemId)
+                    : '',
+            quantity: line.quantity,
+            unit_cost: line.unitCost,
+        })),
     };
     formError.value = '';
     createOpen.value = true;
@@ -210,43 +337,109 @@ function createOrder(): void {
 
     saving.value = true;
     formError.value = '';
-    router.post(`/${slug}/purchase-orders`, form.value, {
+    const editing = editingOrder.value;
+    const endpoint = editing
+        ? updatePurchaseOrder({ current_team: slug, purchaseOrder: editing.id })
+        : storePurchaseOrder({ current_team: slug });
+    router.visit(endpoint.url, {
+        method: editing ? 'patch' : 'post',
+        data: form.value,
+        preserveState: true,
         preserveScroll: true,
         onSuccess: () => (createOpen.value = false),
         onError: (errors) =>
             (formError.value =
-                Object.values(errors)[0] ?? 'Could not create this order.'),
+                Object.values(errors)[0] ?? 'Could not save this order.'),
         onFinish: () => (saving.value = false),
     });
 }
 
 function postAction(order: PurchaseOrder, action: 'submit' | 'approve'): void {
-    const url = orderUrl(order);
-    if (url) router.post(`${url}/${action}`, {}, { preserveScroll: true });
+    const slug = teamSlug();
+    if (!slug || busyOrderId.value !== null) return;
+    const endpoint =
+        action === 'submit'
+            ? submitPurchaseOrder({
+                  current_team: slug,
+                  purchaseOrder: order.id,
+              })
+            : approvePurchaseOrder({
+                  current_team: slug,
+                  purchaseOrder: order.id,
+              });
+    busyOrderId.value = order.id;
+    listError.value = '';
+    router.post(
+        endpoint.url,
+        {},
+        {
+            preserveScroll: true,
+            onError: (errors) =>
+                (listError.value =
+                    Object.values(errors)[0] ??
+                    'Could not update this purchase order.'),
+            onFinish: () => (busyOrderId.value = null),
+        },
+    );
 }
 
-function cancelOrder(order: PurchaseOrder): void {
-    const url = orderUrl(order);
-    if (!url) return;
-    const reason = window.prompt(`Why are you cancelling ${order.number}?`);
-    if (reason?.trim()) {
-        router.post(`${url}/cancel`, { reason }, { preserveScroll: true });
-    }
+function openAction(order: PurchaseOrder, kind: 'cancel' | 'revision'): void {
+    actionOrder.value = order;
+    actionKind.value = kind;
+    actionReason.value = '';
+    actionError.value = '';
+    actionOpen.value = true;
+}
+
+function saveAction(): void {
+    const slug = teamSlug();
+    const order = actionOrder.value;
+    if (!slug || !order || actionSaving.value || !actionReason.value.trim())
+        return;
+    const endpoint =
+        actionKind.value === 'revision'
+            ? requestPurchaseOrderRevision({
+                  current_team: slug,
+                  purchaseOrder: order.id,
+              })
+            : cancelPurchaseOrder({
+                  current_team: slug,
+                  purchaseOrder: order.id,
+              });
+    actionSaving.value = true;
+    actionError.value = '';
+    router.post(
+        endpoint.url,
+        { reason: actionReason.value.trim() },
+        {
+            preserveScroll: true,
+            onSuccess: () => (actionOpen.value = false),
+            onError: (errors) =>
+                (actionError.value =
+                    Object.values(errors)[0] ??
+                    'Could not update this purchase order.'),
+            onFinish: () => (actionSaving.value = false),
+        },
+    );
 }
 
 function openReceive(order: PurchaseOrder, line: PurchaseOrderLine): void {
     returning.value = false;
     selectedOrder.value = order;
     selectedLine.value = line;
+    const warehouse = props.warehouses.find(
+        (option) => option.locations.length > 0,
+    );
     receipt.value = {
-        warehouse_id: props.warehouses[0] ? String(props.warehouses[0].id) : '',
-        warehouse_location_id: props.warehouses[0]?.locations[0]
-            ? String(props.warehouses[0].locations[0].id)
+        warehouse_id: warehouse ? String(warehouse.id) : '',
+        warehouse_location_id: warehouse?.locations[0]
+            ? String(warehouse.locations[0].id)
             : '',
         quantity: Math.max(1, line.quantity - line.receivedQuantity),
         reason: '',
     };
     receivingError.value = '';
+    idempotencyKey.value = crypto.randomUUID();
     receiveOpen.value = true;
 }
 
@@ -268,17 +461,24 @@ function changeReceiptWarehouse(): void {
 function receiveOrderLine(): void {
     const order = selectedOrder.value;
     const line = selectedLine.value;
-    const url = order ? orderUrl(order) : null;
-    if (!url || !line || saving.value) return;
+    const slug = teamSlug();
+    if (!order || !slug || !line || saving.value) return;
 
     saving.value = true;
     receivingError.value = '';
+    const endpoint = returning.value
+        ? returnPurchaseOrderGoods({
+              current_team: slug,
+              purchaseOrder: order.id,
+          })
+        : receivePurchaseOrder({ current_team: slug, purchaseOrder: order.id });
     router.post(
-        `${url}/${returning.value ? 'return' : 'receive'}`,
+        endpoint.url,
         {
             purchase_order_item_id: line.id,
             ...receipt.value,
             ...(returning.value ? { reason: receipt.value.reason } : {}),
+            idempotency_key: idempotencyKey.value,
         },
         {
             preserveScroll: true,
@@ -292,27 +492,8 @@ function receiveOrderLine(): void {
     );
 }
 
-function canSubmit(order: PurchaseOrder): boolean {
-    const user = page.props.auth as { user?: { id: number } } | undefined;
-    return (
-        order.status === 'draft' &&
-        (props.canApprove || order.createdById === user?.user?.id)
-    );
-}
-
-function canCancel(order: PurchaseOrder): boolean {
-    const user = page.props.auth as { user?: { id: number } } | undefined;
-    return (
-        ['draft', 'submitted', 'approved', 'partially_received'].includes(
-            order.status,
-        ) &&
-        (props.canApprove ||
-            (order.status === 'draft' && order.createdById === user?.user?.id))
-    );
-}
-
 function formatDate(value: string | null): string {
-    return value ? dateFormatter.format(new Date(value)) : '—';
+    return value ? dateFormatter.format(new Date(`${value}T00:00:00`)) : '—';
 }
 
 function formatDateTime(value: string | null): string {
@@ -362,9 +543,62 @@ function statusVariant(
                 :disabled="!suppliers.length || !items.length"
                 @click="openCreate"
             >
-                <Plus class="size-4" /> New purchase order
+                <Plus data-icon="inline-start" /> New purchase order
             </Button>
         </header>
+
+        <form
+            class="flex flex-col gap-3 sm:flex-row sm:items-end"
+            role="search"
+            @submit.prevent="applyFilters()"
+        >
+            <div class="grid flex-1 gap-2">
+                <Label for="purchase-order-search"
+                    >Search purchase orders</Label
+                >
+                <Input
+                    id="purchase-order-search"
+                    v-model="search"
+                    type="search"
+                    maxlength="255"
+                    placeholder="PO number, supplier, or reference"
+                />
+            </div>
+            <div class="grid gap-2 sm:w-48">
+                <Label for="purchase-order-status">Status</Label>
+                <select
+                    id="purchase-order-status"
+                    v-model="status"
+                    class="h-9 rounded-md border bg-background px-3 text-sm"
+                >
+                    <option value="">All statuses</option>
+                    <option
+                        v-for="option in statusOptions"
+                        :key="option.value"
+                        :value="option.value"
+                    >
+                        {{ option.label }}
+                    </option>
+                </select>
+            </div>
+            <Button type="submit" variant="outline" :disabled="filtering"
+                ><Search data-icon="inline-start" />{{
+                    filtering ? 'Searching…' : 'Search'
+                }}</Button
+            >
+            <Button
+                v-if="filters.search || filters.status"
+                type="button"
+                variant="ghost"
+                :disabled="filtering"
+                @click="applyFilters(true)"
+                >Clear filters</Button
+            >
+        </form>
+        <Alert v-if="listError" variant="destructive"
+            ><AlertTitle>Could not complete the action</AlertTitle
+            ><AlertDescription>{{ listError }}</AlertDescription></Alert
+        >
 
         <section v-if="orders.length" class="grid gap-4">
             <article
@@ -392,32 +626,59 @@ function statusVariant(
                             >
                             · Created by {{ order.createdBy }}
                         </p>
+                        <p
+                            v-if="order.approvedBy"
+                            class="mt-1 text-sm text-muted-foreground"
+                        >
+                            Approved by {{ order.approvedBy }}
+                        </p>
                     </div>
                     <div class="flex flex-wrap items-center gap-2">
                         <span class="mr-2 font-semibold">{{
                             currency.format(order.totalAmount)
                         }}</span>
                         <Button
-                            v-if="canSubmit(order)"
+                            v-if="order.canUpdate"
+                            variant="outline"
+                            size="sm"
+                            :disabled="busyOrderId !== null"
+                            @click="openEdit(order)"
+                        >
+                            <Pencil data-icon="inline-start" /> Edit draft
+                        </Button>
+                        <Button
+                            v-if="order.canRequestRevision"
+                            variant="outline"
+                            size="sm"
+                            :disabled="busyOrderId !== null"
+                            @click="openAction(order, 'revision')"
+                        >
+                            <Undo2 data-icon="inline-start" /> Request revision
+                        </Button>
+                        <Button
+                            v-if="order.canSubmit"
+                            :disabled="busyOrderId !== null"
                             size="sm"
                             @click="postAction(order, 'submit')"
                         >
-                            <Send class="size-4" /> Submit
+                            <Send data-icon="inline-start" /> Submit
                         </Button>
                         <Button
-                            v-if="canApprove && order.status === 'submitted'"
+                            v-if="order.canApprove"
+                            :disabled="busyOrderId !== null"
                             size="sm"
                             @click="postAction(order, 'approve')"
                         >
-                            <Check class="size-4" /> Approve
+                            <Check data-icon="inline-start" /> Approve
                         </Button>
                         <Button
-                            v-if="canCancel(order)"
+                            v-if="order.canCancel"
+                            :disabled="busyOrderId !== null"
                             variant="outline"
                             size="sm"
-                            @click="cancelOrder(order)"
+                            @click="openAction(order, 'cancel')"
                         >
-                            <X class="size-4" /> Cancel
+                            <X data-icon="inline-start" /> Cancel
                         </Button>
                     </div>
                 </div>
@@ -470,11 +731,7 @@ function statusVariant(
                                 <td class="px-3 py-2 text-right">
                                     <Button
                                         v-if="
-                                            canReceive &&
-                                            [
-                                                'approved',
-                                                'partially_received',
-                                            ].includes(order.status) &&
+                                            order.canReceive &&
                                             line.receivedQuantity <
                                                 line.quantity
                                         "
@@ -482,18 +739,14 @@ function statusVariant(
                                         size="sm"
                                         @click="openReceive(order, line)"
                                     >
-                                        <Truck class="size-4" /> Receive
+                                        <Truck data-icon="inline-start" />
+                                        Receive
                                     </Button>
                                     <Button
                                         v-if="
-                                            canReceive &&
+                                            order.canReturn &&
                                             line.receivedQuantity >
-                                                line.returnedQuantity &&
-                                            [
-                                                'partially_received',
-                                                'received',
-                                                'cancelled',
-                                            ].includes(order.status)
+                                                line.returnedQuantity
                                         "
                                         variant="outline"
                                         size="sm"
@@ -544,9 +797,19 @@ function statusVariant(
             class="rounded-lg border border-dashed px-6 py-12 text-center"
         >
             <ClipboardList class="mx-auto size-8 text-muted-foreground" />
-            <p class="mt-3 font-medium">No purchase orders yet</p>
+            <p class="mt-3 font-medium">
+                {{
+                    filters.search || filters.status
+                        ? 'No matching purchase orders'
+                        : 'No purchase orders yet'
+                }}
+            </p>
             <p class="mt-1 text-sm text-muted-foreground">
-                Create a draft to start purchasing from your suppliers.
+                {{
+                    filters.search || filters.status
+                        ? 'Try another PO number, supplier, reference, or status.'
+                        : 'Create a draft to start purchasing from your suppliers.'
+                }}
             </p>
             <p
                 v-if="!suppliers.length || !items.length"
@@ -559,19 +822,123 @@ function statusVariant(
                 v-if="canCreate && suppliers.length && items.length"
                 class="mt-4"
                 @click="openCreate"
-                ><Plus class="size-4" /> New purchase order</Button
+                ><Plus data-icon="inline-start" /> New purchase order</Button
             >
         </section>
+
+        <nav
+            v-if="pagination.total > 0"
+            aria-label="Purchase order pagination"
+            class="flex flex-wrap items-center justify-between gap-3 text-sm"
+        >
+            <p class="text-muted-foreground">
+                Showing {{ pagination.from ?? 0 }}–{{ pagination.to ?? 0 }} of
+                {{ pagination.total }} orders
+            </p>
+            <div class="flex items-center gap-3">
+                <Button
+                    variant="outline"
+                    size="sm"
+                    :disabled="filtering || !pagination.prevPageUrl"
+                    @click="visitPage(pagination.prevPageUrl)"
+                    >Previous</Button
+                >
+                <span
+                    >Page {{ pagination.currentPage }} of
+                    {{ pagination.lastPage }}</span
+                >
+                <Button
+                    variant="outline"
+                    size="sm"
+                    :disabled="filtering || !pagination.nextPageUrl"
+                    @click="visitPage(pagination.nextPageUrl)"
+                    >Next</Button
+                >
+            </div>
+        </nav>
+
+        <Dialog v-model:open="actionOpen">
+            <DialogContent class="sm:max-w-lg">
+                <form class="grid gap-5" @submit.prevent="saveAction">
+                    <DialogHeader>
+                        <DialogTitle>{{
+                            actionKind === 'revision'
+                                ? 'Request revision'
+                                : 'Cancel purchase order'
+                        }}</DialogTitle>
+                        <DialogDescription>
+                            {{ actionOrder?.number }}:
+                            {{
+                                actionKind === 'revision'
+                                    ? 'Send this order back to draft so it can be corrected and submitted again.'
+                                    : 'Cancel the outstanding order. Received stock and its history are retained.'
+                            }}
+                        </DialogDescription>
+                    </DialogHeader>
+                    <div class="grid gap-2">
+                        <Label for="po-action-reason">{{
+                            actionKind === 'revision'
+                                ? 'Revision reason'
+                                : 'Cancellation reason'
+                        }}</Label>
+                        <Input
+                            id="po-action-reason"
+                            v-model="actionReason"
+                            required
+                            maxlength="2000"
+                            :aria-invalid="!!actionError"
+                        />
+                    </div>
+                    <p
+                        v-if="actionError"
+                        role="alert"
+                        class="text-sm text-destructive"
+                    >
+                        {{ actionError }}
+                    </p>
+                    <DialogFooter>
+                        <Button
+                            type="button"
+                            variant="outline"
+                            :disabled="actionSaving"
+                            @click="actionOpen = false"
+                            >Keep order</Button
+                        >
+                        <Button
+                            type="submit"
+                            :variant="
+                                actionKind === 'cancel'
+                                    ? 'destructive'
+                                    : 'default'
+                            "
+                            :disabled="actionSaving || !actionReason.trim()"
+                            >{{
+                                actionSaving
+                                    ? 'Saving…'
+                                    : actionKind === 'revision'
+                                      ? 'Send back for revision'
+                                      : 'Cancel order'
+                            }}</Button
+                        >
+                    </DialogFooter>
+                </form>
+            </DialogContent>
+        </Dialog>
 
         <Dialog v-model:open="createOpen">
             <DialogContent class="max-h-[90vh] overflow-y-auto sm:max-w-3xl">
                 <form class="grid gap-5" @submit.prevent="createOrder">
                     <DialogHeader class="text-left">
-                        <DialogTitle>New purchase order</DialogTitle>
-                        <DialogDescription
-                            >Create a draft with supplier, expected delivery,
-                            reference, and inventory lines.</DialogDescription
-                        >
+                        <DialogTitle>{{
+                            editingOrder
+                                ? 'Edit purchase order'
+                                : 'New purchase order'
+                        }}</DialogTitle>
+                        <DialogDescription>{{
+                            editingOrder
+                                ? 'Update the supplier, delivery date, reference, and items before submitting for approval.'
+                                : 'Create a draft with supplier, expected delivery, reference, and inventory lines.'
+                        }}</DialogDescription>
                     </DialogHeader>
                     <div class="grid gap-4 sm:grid-cols-2">
                         <div class="grid gap-2">
@@ -621,7 +988,8 @@ function statusVariant(
                                 variant="outline"
                                 size="sm"
                                 @click="addLine"
-                                ><Plus class="size-4" /> Add item</Button
+                                ><Plus data-icon="inline-start" /> Add
+                                item</Button
                             >
                         </div>
                         <div
@@ -694,7 +1062,7 @@ function statusVariant(
                                 :disabled="form.items.length === 1"
                                 :aria-label="`Remove item ${index + 1}`"
                                 @click="removeLine(index)"
-                                ><X class="size-4"
+                                ><X data-icon="inline-start"
                             /></Button>
                         </div>
                         <p class="text-right text-sm font-semibold">
@@ -739,7 +1107,13 @@ function statusVariant(
                                 !form.supplier_id ||
                                 !hasValidDraftItems
                             "
-                            >{{ saving ? 'Saving…' : 'Create draft' }}</Button
+                            >{{
+                                saving
+                                    ? 'Saving…'
+                                    : editingOrder
+                                      ? 'Save changes'
+                                      : 'Create draft'
+                            }}</Button
                         ></DialogFooter
                     >
                 </form>
@@ -838,6 +1212,18 @@ function statusVariant(
                             />
                         </div>
                     </div>
+                    <Alert
+                        v-if="
+                            !warehouses.length ||
+                            !selectedWarehouse?.locations.length
+                        "
+                    >
+                        <AlertTitle>A warehouse bin is required</AlertTitle>
+                        <AlertDescription
+                            >Select a warehouse with a bin, or add one in
+                            Warehouses before recording stock.</AlertDescription
+                        >
+                    </Alert>
                     <p
                         v-if="receivingError"
                         role="alert"
@@ -853,7 +1239,11 @@ function statusVariant(
                             >Cancel</Button
                         ><Button
                             type="submit"
-                            :disabled="saving || !warehouses.length"
+                            :disabled="
+                                saving ||
+                                !receipt.warehouse_id ||
+                                !receipt.warehouse_location_id
+                            "
                             >{{
                                 saving
                                     ? 'Recording…'

@@ -14,9 +14,10 @@ import type { NavItem } from '@/types';
 defineProps<{
     items: NavItem[];
     modules: { title: string; icon: LucideIcon }[];
+    purchasingItems: NavItem[];
 }>();
 
-const { isCurrentUrl } = useCurrentUrl();
+const { isCurrentOrParentUrl, isCurrentUrl } = useCurrentUrl();
 </script>
 
 <template>
@@ -39,6 +40,27 @@ const { isCurrentUrl } = useCurrentUrl();
                 <SidebarMenuButton as="div" class="pointer-events-none">
                     <component :is="module.icon" aria-hidden="true" />
                     <span>{{ module.title }}</span>
+                </SidebarMenuButton>
+            </SidebarMenuItem>
+        </SidebarMenu>
+    </SidebarGroup>
+
+    <SidebarGroup class="px-2 py-0">
+        <SidebarGroupLabel>Purchasing</SidebarGroupLabel>
+        <SidebarMenu>
+            <SidebarMenuItem v-for="item in purchasingItems" :key="item.title">
+                <SidebarMenuButton
+                    as-child
+                    :is-active="isCurrentOrParentUrl(item.href)"
+                    :tooltip="item.title"
+                >
+                    <Link
+                        :href="item.href"
+                        :aria-current="isCurrentUrl(item.href) ? 'page' : undefined"
+                    >
+                        <component :is="item.icon" aria-hidden="true" />
+                        <span>{{ item.title }}</span>
+                    </Link>
                 </SidebarMenuButton>
             </SidebarMenuItem>
         </SidebarMenu>

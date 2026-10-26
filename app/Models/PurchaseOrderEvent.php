@@ -14,8 +14,10 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  * @property string|null $from_status
  * @property string $to_status
  * @property string|null $note
+ * @property string|null $idempotency_key
+ * @property string|null $payload_hash
  */
-#[Fillable(['purchase_order_id', 'user_id', 'from_status', 'to_status', 'note'])]
+#[Fillable(['purchase_order_id', 'user_id', 'from_status', 'to_status', 'note', 'idempotency_key', 'payload_hash'])]
 class PurchaseOrderEvent extends Model
 {
     use HasFactory;

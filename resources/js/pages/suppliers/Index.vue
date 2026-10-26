@@ -14,6 +14,7 @@ import {
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { index as suppliersIndex } from '@/routes/suppliers';
 
 type Supplier = {
     id: number;
@@ -31,16 +32,18 @@ const props = defineProps<{
 }>();
 
 defineOptions({
-    layout: (layoutProps: { currentTeam?: { slug: string } | null }) => ({
-        breadcrumbs: [
-            {
-                title: 'Suppliers',
-                href: layoutProps.currentTeam
-                    ? `/${layoutProps.currentTeam.slug}/suppliers`
-                    : '/suppliers',
-            },
-        ],
-    }),
+    layout: (layoutProps: { currentTeam?: { slug: string } | null }) => {
+        const suppliersUrl = layoutProps.currentTeam
+            ? suppliersIndex(layoutProps.currentTeam.slug).url
+            : suppliersIndex().url;
+
+        return {
+            breadcrumbs: [
+                { title: 'Purchasing' },
+                { title: 'Suppliers', href: suppliersUrl },
+            ],
+        };
+    },
 });
 
 const page = usePage();

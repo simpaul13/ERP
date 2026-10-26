@@ -11,7 +11,10 @@ use App\Models\PurchaseOrder;
 use App\Models\PurchaseOrderItem;
 use App\Models\StockMovement;
 use App\Models\Supplier;
+use App\Models\Team;
 use App\Models\Warehouse;
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -32,14 +35,65 @@ class PurchaseOrderController extends Controller
 
         Gate::authorize('viewAny', PurchaseOrder::class);
 
+        $validatedFilters = $request->validate([
+            'search' => ['nullable', 'string', 'max:255'],
+            'status' => ['nullable', Rule::enum(PurchaseOrderStatus::class)],
+            'page' => ['nullable', 'integer', 'min:1'],
+        ]);
+        $search = trim($validatedFilters['search'] ?? '');
+        $status = $validatedFilters['status'] ?? '';
+        $ordersQuery = $team->purchaseOrders()
+            ->with(['team', 'supplier', 'creator', 'approver', 'items', 'events.user'])
+            ->latest('id');
+
+        if ($status !== '') {
+            $ordersQuery->where('status', $status);
+        }
+
+        if ($search !== '') {
+            $numberId = preg_match('/^PO-0*(\d+)$/i', $search, $matches) === 1
+                ? (int) $matches[1]
+                : null;
+            $ordersQuery->where(function (Builder $query) use ($search, $numberId): void {
+                $query->where('reference', 'like', "%{$search}%")
+                    ->orWhereHas('supplier', fn (Builder $supplierQuery) => $supplierQuery->where('name', 'like', "%{$search}%"));
+
+                if ($numberId !== null) {
+                    $query->orWhereKey($numberId);
+                }
+            });
+        }
+
+        $ordersPage = $ordersQuery->paginate(20)->withQueryString();
+        $itemIds = $ordersPage->getCollection()->flatMap(fn (PurchaseOrder $order) => $order->items->pluck('id'))->all();
+        $returnedQuantities = $itemIds === [] ? collect() : StockMovement::query()
+            ->whereIn('purchase_order_item_id', $itemIds)
+            ->where('type', StockMovementType::Issue)
+            ->select('purchase_order_item_id', DB::raw('SUM(ABS(quantity)) as returned_quantity'))
+            ->groupBy('purchase_order_item_id')
+            ->pluck('returned_quantity', 'purchase_order_item_id');
+
+        $orders = $ordersPage->getCollection()
+            ->map(fn (PurchaseOrder $order): array => $this->orderToArray($order, $returnedQuantities->all(), $request))
+            ->values()
+            ->all();
+
         return Inertia::render('purchase-orders/Index', [
-            'orders' => $team->purchaseOrders()
-                ->with(['supplier', 'creator', 'approver', 'items', 'events.user'])
-                ->latest('id')
-                ->limit(100)
-                ->get()
-                ->map(fn (PurchaseOrder $order): array => $this->orderToArray($order))
-                ->values(),
+            'orders' => $orders,
+            'pagination' => [
+                'currentPage' => $ordersPage->currentPage(),
+                'lastPage' => $ordersPage->lastPage(),
+                'total' => $ordersPage->total(),
+                'from' => $ordersPage->firstItem(),
+                'to' => $ordersPage->lastItem(),
+                'prevPageUrl' => $ordersPage->previousPageUrl(),
+                'nextPageUrl' => $ordersPage->nextPageUrl(),
+            ],
+            'filters' => ['search' => $search, 'status' => $status],
+            'statusOptions' => collect(PurchaseOrderStatus::cases())->map(fn (PurchaseOrderStatus $status): array => [
+                'value' => $status->value,
+                'label' => $status->label(),
+            ])->values(),
             'suppliers' => $team->suppliers()
                 ->where('is_active', true)
                 ->orderBy('name')
@@ -81,32 +135,10 @@ class PurchaseOrderController extends Controller
         $team = $request->user()->currentTeam;
         Gate::authorize('create', PurchaseOrder::class);
 
-        $validated = $request->validate([
-            'supplier_id' => ['required', 'integer', Rule::exists('suppliers', 'id')->where('team_id', $team->id)->whereNull('deleted_at')->where('is_active', true)],
-            'expected_date' => ['required', 'date'],
-            'reference' => ['nullable', 'string', 'max:255'],
-            'items' => ['required', 'array', 'min:1', 'max:100'],
-            'items.*.inventory_item_id' => ['required', 'integer', 'distinct', Rule::exists('inventory_items', 'id')->where('team_id', $team->id)],
-            'items.*.quantity' => ['required', 'integer', 'min:1', 'max:1000000'],
-            'items.*.unit_cost' => ['required', 'numeric', 'min:0', 'max:999999.99', 'decimal:0,2'],
-        ]);
+        $validated = $this->validatedDraft($request, $team->id);
 
         DB::transaction(function () use ($team, $request, $validated): void {
-            $items = $team->inventoryItems()
-                ->whereIn('id', collect($validated['items'])->pluck('inventory_item_id'))
-                ->get()
-                ->keyBy('id');
-            $totalCents = 0;
-
-            foreach ($validated['items'] as $line) {
-                $totalCents += (int) round((float) $line['unit_cost'] * 100) * (int) $line['quantity'];
-            }
-
-            if ($totalCents > 99999999999999) {
-                throw ValidationException::withMessages([
-                    'items' => 'The total purchase order amount exceeds the supported limit.',
-                ]);
-            }
+            [$items, $totalCents] = $this->draftSnapshot($team->id, $validated);
 
             $order = $team->purchaseOrders()->create([
                 'supplier_id' => $validated['supplier_id'],
@@ -117,21 +149,7 @@ class PurchaseOrderController extends Controller
                 'total_amount' => number_format($totalCents / 100, 2, '.', ''),
             ]);
 
-            foreach ($validated['items'] as $line) {
-                $item = $items->get((int) $line['inventory_item_id']);
-                abort_unless($item instanceof InventoryItem, 422);
-                $unitCostCents = (int) round((float) $line['unit_cost'] * 100);
-                $lineTotalCents = $unitCostCents * (int) $line['quantity'];
-
-                $order->items()->create([
-                    'inventory_item_id' => $item->id,
-                    'item_name' => $item->name,
-                    'sku' => $item->sku,
-                    'quantity' => $line['quantity'],
-                    'unit_cost' => number_format($unitCostCents / 100, 2, '.', ''),
-                    'line_total' => number_format($lineTotalCents / 100, 2, '.', ''),
-                ]);
-            }
+            $this->createItemSnapshots($order, $items, $validated['items']);
 
             $order->events()->create([
                 'user_id' => $request->user()->id,
@@ -141,6 +159,64 @@ class PurchaseOrderController extends Controller
         });
 
         Inertia::flash('toast', ['type' => 'success', 'message' => 'Purchase order draft created.']);
+
+        return back();
+    }
+
+    /**
+     * Replace the item snapshots on an editable draft purchase order.
+     */
+    public function update(Request $request, string $currentTeamSlug, PurchaseOrder $purchaseOrder): RedirectResponse
+    {
+        $order = $this->teamOrder($request, $purchaseOrder);
+        Gate::authorize('update', $order);
+        $team = $request->user()->currentTeam;
+        $validated = $this->validatedDraft($request, $team->id);
+
+        DB::transaction(function () use ($order, $request, $team, $validated): void {
+            $lockedOrder = PurchaseOrder::query()->whereKey($order->id)->lockForUpdate()->firstOrFail();
+            Gate::authorize('update', $lockedOrder);
+            [$items, $totalCents] = $this->draftSnapshot($team->id, $validated);
+
+            $lockedOrder->update([
+                'supplier_id' => $validated['supplier_id'],
+                'expected_date' => $validated['expected_date'],
+                'reference' => ($validated['reference'] ?? '') ?: null,
+                'total_amount' => number_format($totalCents / 100, 2, '.', ''),
+            ]);
+            $lockedOrder->items()->delete();
+            $this->createItemSnapshots($lockedOrder, $items, $validated['items']);
+            $lockedOrder->events()->create([
+                'user_id' => $request->user()->id,
+                'from_status' => PurchaseOrderStatus::Draft->value,
+                'to_status' => PurchaseOrderStatus::Draft->value,
+                'note' => 'Draft purchase order updated.',
+            ]);
+        });
+
+        return back();
+    }
+
+    /**
+     * Return a submitted purchase order to its creator for revisions.
+     */
+    public function requestRevision(Request $request, string $currentTeamSlug, PurchaseOrder $purchaseOrder): RedirectResponse
+    {
+        $order = $this->teamOrder($request, $purchaseOrder);
+        Gate::authorize('requestRevision', $order);
+        $validated = $request->validate(['reason' => ['required', 'string', 'max:2000']]);
+        $reason = trim($validated['reason']);
+
+        if ($reason === '') {
+            throw ValidationException::withMessages(['reason' => 'A revision reason is required.']);
+        }
+
+        DB::transaction(function () use ($order, $request, $reason): void {
+            $lockedOrder = PurchaseOrder::query()->whereKey($order->id)->lockForUpdate()->firstOrFail();
+            Gate::authorize('requestRevision', $lockedOrder);
+            $lockedOrder->update(['approved_by' => null]);
+            $this->transition($lockedOrder, PurchaseOrderStatus::Draft, $request->user()->id, $reason);
+        });
 
         return back();
     }
@@ -191,20 +267,28 @@ class PurchaseOrderController extends Controller
     ): RedirectResponse {
         $team = $request->user()->currentTeam;
         $order = $this->teamOrder($request, $purchaseOrder);
-        Gate::authorize('receive', $order);
+        Gate::authorize('receiveAny', PurchaseOrder::class);
 
         $validated = $request->validate([
+            'idempotency_key' => ['required', 'uuid'],
             'purchase_order_item_id' => ['required', 'integer', Rule::exists('purchase_order_items', 'id')->where('purchase_order_id', $order->id)],
             'warehouse_id' => ['required', 'integer', Rule::exists('warehouses', 'id')->where('team_id', $team->id)],
             'warehouse_location_id' => ['required', 'integer', Rule::exists('warehouse_locations', 'id')->where('warehouse_id', (int) $request->input('warehouse_id'))],
             'quantity' => ['required', 'integer', 'min:1', 'max:1000000'],
         ]);
+        $validated['idempotency_key'] = strtolower($validated['idempotency_key']);
+        $payloadHash = $this->operationPayloadHash('receive', $validated);
 
-        DB::transaction(function () use ($order, $team, $request, $validated, $recordStockMovement): void {
+        DB::transaction(function () use ($order, $team, $request, $validated, $recordStockMovement, $payloadHash): void {
             $lockedOrder = PurchaseOrder::query()->whereKey($order->id)->lockForUpdate()->firstOrFail();
+            if ($this->isIdempotentReplay($lockedOrder, $validated['idempotency_key'], $payloadHash)) {
+                return;
+            }
+
             if (! in_array($lockedOrder->status, [PurchaseOrderStatus::Approved, PurchaseOrderStatus::PartiallyReceived], true)) {
                 throw ValidationException::withMessages(['purchase_order' => 'Only approved orders can be received.']);
             }
+            Gate::authorize('receive', $lockedOrder);
 
             $line = $lockedOrder->items()->whereKey($validated['purchase_order_item_id'])->lockForUpdate()->firstOrFail();
             $quantity = (int) $validated['quantity'];
@@ -225,8 +309,8 @@ class PurchaseOrderController extends Controller
                 ]);
             }
 
-            $warehouse = $team->warehouses()->findOrFail($validated['warehouse_id']);
-            $location = $warehouse->locations()->findOrFail($validated['warehouse_location_id']);
+            $warehouse = $team->warehouses()->whereKey($validated['warehouse_id'])->firstOrFail();
+            $location = $warehouse->locations()->whereKey($validated['warehouse_location_id'])->firstOrFail();
 
             $movement = $recordStockMovement->handle(
                 team: $team,
@@ -258,6 +342,8 @@ class PurchaseOrderController extends Controller
                 'from_status' => $previousStatus->value,
                 'to_status' => $nextStatus->value,
                 'note' => "Received {$quantity} × {$line->item_name} ({$line->sku}).",
+                'idempotency_key' => $validated['idempotency_key'],
+                'payload_hash' => $payloadHash,
             ]);
         });
 
@@ -275,18 +361,31 @@ class PurchaseOrderController extends Controller
     ): RedirectResponse {
         $team = $request->user()->currentTeam;
         $order = $this->teamOrder($request, $purchaseOrder);
-        Gate::authorize('returnGoods', $order);
+        Gate::authorize('receiveAny', PurchaseOrder::class);
 
         $validated = $request->validate([
+            'idempotency_key' => ['required', 'uuid'],
             'purchase_order_item_id' => ['required', 'integer', Rule::exists('purchase_order_items', 'id')->where('purchase_order_id', $order->id)],
             'warehouse_id' => ['required', 'integer', Rule::exists('warehouses', 'id')->where('team_id', $team->id)],
             'warehouse_location_id' => ['required', 'integer', Rule::exists('warehouse_locations', 'id')->where('warehouse_id', (int) $request->input('warehouse_id'))],
             'quantity' => ['required', 'integer', 'min:1', 'max:1000000'],
             'reason' => ['required', 'string', 'max:2000'],
         ]);
+        $validated['idempotency_key'] = strtolower($validated['idempotency_key']);
+        $validated['reason'] = trim($validated['reason']);
 
-        DB::transaction(function () use ($order, $team, $request, $validated, $recordStockMovement): void {
+        if ($validated['reason'] === '') {
+            throw ValidationException::withMessages(['reason' => 'A return reason is required.']);
+        }
+
+        $payloadHash = $this->operationPayloadHash('return', $validated);
+
+        DB::transaction(function () use ($order, $team, $request, $validated, $recordStockMovement, $payloadHash): void {
             $lockedOrder = PurchaseOrder::query()->whereKey($order->id)->lockForUpdate()->firstOrFail();
+            if ($this->isIdempotentReplay($lockedOrder, $validated['idempotency_key'], $payloadHash)) {
+                return;
+            }
+
             Gate::authorize('returnGoods', $lockedOrder);
             $line = $lockedOrder->items()->whereKey($validated['purchase_order_item_id'])->lockForUpdate()->firstOrFail();
             $returnedQuantity = (int) StockMovement::query()
@@ -311,8 +410,8 @@ class PurchaseOrderController extends Controller
                 ]);
             }
 
-            $warehouse = $team->warehouses()->findOrFail($validated['warehouse_id']);
-            $location = $warehouse->locations()->findOrFail($validated['warehouse_location_id']);
+            $warehouse = $team->warehouses()->whereKey($validated['warehouse_id'])->firstOrFail();
+            $location = $warehouse->locations()->whereKey($validated['warehouse_location_id'])->firstOrFail();
             $movement = $recordStockMovement->handle(
                 team: $team,
                 inventoryItem: $inventoryItem,
@@ -332,6 +431,8 @@ class PurchaseOrderController extends Controller
                 'from_status' => $lockedOrder->status->value,
                 'to_status' => $lockedOrder->status->value,
                 'note' => "Returned {$quantity} × {$line->item_name} ({$line->sku}) to supplier: ".trim($validated['reason']),
+                'idempotency_key' => $validated['idempotency_key'],
+                'payload_hash' => $payloadHash,
             ]);
         });
 
@@ -344,15 +445,19 @@ class PurchaseOrderController extends Controller
         Gate::authorize('cancel', $order);
 
         $validated = $request->validate(['reason' => ['required', 'string', 'max:2000']]);
+        $reason = trim($validated['reason']);
 
-        DB::transaction(function () use ($order, $request, $validated): void {
+        if ($reason === '') {
+            throw ValidationException::withMessages(['reason' => 'A cancellation reason is required.']);
+        }
+
+        DB::transaction(function () use ($order, $request, $reason): void {
             $lockedOrder = PurchaseOrder::query()->whereKey($order->id)->lockForUpdate()->firstOrFail();
             Gate::authorize('cancel', $lockedOrder);
             if (in_array($lockedOrder->status, [PurchaseOrderStatus::Received, PurchaseOrderStatus::Cancelled], true)) {
                 throw ValidationException::withMessages(['purchase_order' => 'This purchase order can no longer be cancelled.']);
             }
 
-            $reason = trim($validated['reason']);
             $lockedOrder->update(['cancellation_reason' => $reason]);
             $this->transition($lockedOrder, PurchaseOrderStatus::Cancelled, $request->user()->id, $reason);
         });
@@ -363,6 +468,76 @@ class PurchaseOrderController extends Controller
     private function teamOrder(Request $request, PurchaseOrder $purchaseOrder): PurchaseOrder
     {
         return $request->user()->currentTeam->purchaseOrders()->findOrFail($purchaseOrder->id);
+    }
+
+    /**
+     * Validate fields shared by draft creation and revision.
+     *
+     * @return array{supplier_id: int, expected_date: string, reference?: string|null, items: array<int, array{inventory_item_id: int, quantity: int, unit_cost: string|int|float}>}
+     */
+    private function validatedDraft(Request $request, int $teamId): array
+    {
+        return $request->validate([
+            'supplier_id' => ['required', 'integer', Rule::exists('suppliers', 'id')->where('team_id', $teamId)->whereNull('deleted_at')->where('is_active', true)],
+            'expected_date' => ['required', 'date'],
+            'reference' => ['nullable', 'string', 'max:255'],
+            'items' => ['required', 'array', 'min:1', 'max:100'],
+            'items.*.inventory_item_id' => ['required', 'integer', 'distinct', Rule::exists('inventory_items', 'id')->where('team_id', $teamId)],
+            'items.*.quantity' => ['required', 'integer', 'min:1', 'max:1000000'],
+            'items.*.unit_cost' => ['required', 'numeric', 'min:0', 'max:999999.99', 'decimal:0,2'],
+        ]);
+    }
+
+    /**
+     * Resolve team-owned items and calculate the order total using cents.
+     *
+     * @param  array{supplier_id: int, expected_date: string, reference?: string|null, items: array<int, array{inventory_item_id: int, quantity: int, unit_cost: string|int|float}>}  $validated
+     * @return array{Collection<int, InventoryItem>, int}
+     */
+    private function draftSnapshot(int $teamId, array $validated): array
+    {
+        $items = Team::query()->findOrFail($teamId)->inventoryItems()
+            ->whereIn('id', collect($validated['items'])->pluck('inventory_item_id'))
+            ->get()
+            ->keyBy('id');
+        $totalCents = 0;
+
+        foreach ($validated['items'] as $line) {
+            $totalCents += (int) round((float) $line['unit_cost'] * 100) * (int) $line['quantity'];
+        }
+
+        if ($totalCents > 99999999999999) {
+            throw ValidationException::withMessages([
+                'items' => 'The total purchase order amount exceeds the supported limit.',
+            ]);
+        }
+
+        return [$items, $totalCents];
+    }
+
+    /**
+     * Persist immutable item name, SKU, and cost snapshots for a draft.
+     *
+     * @param  Collection<int, InventoryItem>  $items
+     * @param  array<int, array{inventory_item_id: int, quantity: int, unit_cost: string|int|float}>  $lines
+     */
+    private function createItemSnapshots(PurchaseOrder $order, Collection $items, array $lines): void
+    {
+        foreach ($lines as $line) {
+            $item = $items->get((int) $line['inventory_item_id']);
+            abort_unless($item instanceof InventoryItem, 422);
+            $unitCostCents = (int) round((float) $line['unit_cost'] * 100);
+            $lineTotalCents = $unitCostCents * (int) $line['quantity'];
+
+            $order->items()->create([
+                'inventory_item_id' => $item->id,
+                'item_name' => $item->name,
+                'sku' => $item->sku,
+                'quantity' => $line['quantity'],
+                'unit_cost' => number_format($unitCostCents / 100, 2, '.', ''),
+                'line_total' => number_format($lineTotalCents / 100, 2, '.', ''),
+            ]);
+        }
     }
 
     private function transition(PurchaseOrder $order, PurchaseOrderStatus $status, int $userId, string $note): void
@@ -378,24 +553,70 @@ class PurchaseOrderController extends Controller
     }
 
     /**
+     * Hash the normalized fields that define a receipt or supplier return.
+     *
+     * @param  array{purchase_order_item_id: int|string, warehouse_id: int|string, warehouse_location_id: int|string, quantity: int|string, reason?: string}  $validated
+     */
+    private function operationPayloadHash(string $operation, array $validated): string
+    {
+        $payload = [
+            'operation' => $operation,
+            'purchase_order_item_id' => (int) $validated['purchase_order_item_id'],
+            'warehouse_id' => (int) $validated['warehouse_id'],
+            'warehouse_location_id' => (int) $validated['warehouse_location_id'],
+            'quantity' => (int) $validated['quantity'],
+            'reason' => $operation === 'return' ? trim($validated['reason'] ?? '') : null,
+        ];
+
+        return hash('sha256', json_encode($payload, JSON_THROW_ON_ERROR));
+    }
+
+    private function isIdempotentReplay(PurchaseOrder $order, string $key, string $payloadHash): bool
+    {
+        $event = $order->events()->where('idempotency_key', $key)->first();
+
+        if ($event === null) {
+            return false;
+        }
+
+        if (! hash_equals((string) $event->payload_hash, $payloadHash)) {
+            throw ValidationException::withMessages([
+                'idempotency_key' => 'This key was already used for a different purchasing operation or payload.',
+            ]);
+        }
+
+        return true;
+    }
+
+    /**
      * Convert a purchase order and its history to the Inertia response shape.
      *
+     * @param  array<int, int|string|null>  $returnedQuantities
      * @return array<string, mixed>
      */
-    private function orderToArray(PurchaseOrder $order): array
+    private function orderToArray(PurchaseOrder $order, array $returnedQuantities, Request $request): array
     {
         return [
             'id' => $order->id,
             'number' => $order->number(),
-            'supplierName' => $order->supplier?->name ?? 'Archived supplier',
+            'supplierName' => $order->supplier->name,
+            'supplierId' => $order->supplier_id,
             'status' => $order->status->value,
             'statusLabel' => $order->status->label(),
             'expectedDate' => $order->expected_date->toDateString(),
             'reference' => $order->reference,
             'totalAmount' => (float) $order->total_amount,
-            'createdBy' => $order->creator?->name ?? 'Former user',
+            'createdBy' => $order->created_by === null ? 'Former user' : $order->creator->name,
             'createdById' => $order->created_by,
+            'approvedBy' => $order->approver?->name,
             'cancellationReason' => $order->cancellation_reason,
+            'canUpdate' => $request->user()->can('update', $order),
+            'canSubmit' => $request->user()->can('submit', $order),
+            'canApprove' => $request->user()->can('approve', $order),
+            'canRequestRevision' => $request->user()->can('requestRevision', $order),
+            'canCancel' => $request->user()->can('cancel', $order),
+            'canReceive' => $request->user()->can('receive', $order),
+            'canReturn' => $request->user()->can('returnGoods', $order),
             'items' => $order->items->map(fn (PurchaseOrderItem $item): array => [
                 'id' => $item->id,
                 'inventoryItemId' => $item->inventory_item_id,
@@ -403,10 +624,7 @@ class PurchaseOrderController extends Controller
                 'sku' => $item->sku,
                 'quantity' => $item->quantity,
                 'receivedQuantity' => $item->received_quantity,
-                'returnedQuantity' => (int) StockMovement::query()
-                    ->where('purchase_order_item_id', $item->id)
-                    ->where('type', StockMovementType::Issue)
-                    ->sum(DB::raw('ABS(quantity)')),
+                'returnedQuantity' => (int) ($returnedQuantities[$item->id] ?? 0),
                 'unitCost' => (float) $item->unit_cost,
                 'lineTotal' => (float) $item->line_total,
             ])->values(),
@@ -415,7 +633,7 @@ class PurchaseOrderController extends Controller
                 'fromStatus' => $event->from_status,
                 'toStatus' => $event->to_status,
                 'note' => $event->note,
-                'userName' => $event->user?->name ?? 'Former user',
+                'userName' => $event->user_id === null ? 'Former user' : $event->user->name,
                 'createdAt' => $event->created_at?->toIso8601String(),
             ])->values(),
         ];

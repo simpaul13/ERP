@@ -65,6 +65,12 @@ class PurchaseOrderPolicy
             && $this->isAdmin($user, $purchaseOrder->team);
     }
 
+    public function requestRevision(User $user, PurchaseOrder $purchaseOrder): bool
+    {
+        return $purchaseOrder->status === PurchaseOrderStatus::Submitted
+            && $this->isAdmin($user, $purchaseOrder->team);
+    }
+
     public function receive(User $user, PurchaseOrder $purchaseOrder): bool
     {
         return in_array($purchaseOrder->status, [PurchaseOrderStatus::Approved, PurchaseOrderStatus::PartiallyReceived], true)
