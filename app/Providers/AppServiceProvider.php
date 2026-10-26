@@ -2,6 +2,7 @@
 
 namespace App\Providers;
 
+use App\Enums\TeamRole;
 use App\Models\InventoryItem;
 use App\Models\Supplier;
 use App\Models\Warehouse;
@@ -33,6 +34,7 @@ class AppServiceProvider extends ServiceProvider
         Gate::policy(InventoryItem::class, InventoryPolicy::class);
         Gate::policy(Supplier::class, SupplierPolicy::class);
         Gate::policy(Warehouse::class, WarehousePolicy::class);
+        Gate::define('manage-finance', fn ($user, $team): bool => $team !== null && ($user->teamRole($team)?->isAtLeast(TeamRole::Admin) ?? false));
 
         $this->configureDefaults();
     }

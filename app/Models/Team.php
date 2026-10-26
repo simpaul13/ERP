@@ -30,6 +30,8 @@ use Illuminate\Support\Carbon;
  * @property-read Collection<int, StockMovement> $stockMovements
  * @property-read Collection<int, Supplier> $suppliers
  * @property-read Collection<int, PurchaseOrder> $purchaseOrders
+ * @property-read Collection<int, FinanceCategory> $financeCategories
+ * @property-read Collection<int, FinanceTransaction> $financeTransactions
  */
 #[Fillable(['name', 'slug', 'is_personal'])]
 class Team extends Model
@@ -62,6 +64,11 @@ class Team extends Model
                 'name' => 'Main warehouse',
                 'is_default' => true,
             ]);
+            foreach (['income' => ['Sales', 'Other Income'], 'expense' => ['Supplies', 'Rent', 'Transport', 'Utilities', 'Other Expense']] as $type => $names) {
+                foreach ($names as $name) {
+                    $team->financeCategories()->create(['name' => $name, 'type' => $type]);
+                }
+            }
         });
     }
 
@@ -156,6 +163,18 @@ class Team extends Model
     public function purchaseOrders(): HasMany
     {
         return $this->hasMany(PurchaseOrder::class);
+    }
+
+    /** @return HasMany<FinanceCategory, $this> */
+    public function financeCategories(): HasMany
+    {
+        return $this->hasMany(FinanceCategory::class);
+    }
+
+    /** @return HasMany<FinanceTransaction, $this> */
+    public function financeTransactions(): HasMany
+    {
+        return $this->hasMany(FinanceTransaction::class);
     }
 
     /** @return HasMany<SalesOrder, $this> */

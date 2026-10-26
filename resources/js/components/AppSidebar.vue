@@ -1,21 +1,21 @@
 <script setup lang="ts">
-import { Link, usePage } from '@inertiajs/vue3';
+import { Link, usePage } from "@inertiajs/vue3";
 import {
-    BadgeDollarSign,
     Barcode,
     Boxes,
     ChartNoAxesCombined,
     LayoutGrid,
+    CircleDollarSign,
     ReceiptText,
     ShoppingCart,
     Truck,
     Warehouse,
-} from '@lucide/vue';
-import { computed } from 'vue';
-import AppLogo from '@/components/AppLogo.vue';
-import NavMain from '@/components/NavMain.vue';
-import NavUser from '@/components/NavUser.vue';
-import TeamSwitcher from '@/components/TeamSwitcher.vue';
+} from "@lucide/vue";
+import { computed } from "vue";
+import AppLogo from "@/components/AppLogo.vue";
+import NavMain from "@/components/NavMain.vue";
+import NavUser from "@/components/NavUser.vue";
+import TeamSwitcher from "@/components/TeamSwitcher.vue";
 import {
     Sidebar,
     SidebarContent,
@@ -24,74 +24,81 @@ import {
     SidebarMenu,
     SidebarMenuButton,
     SidebarMenuItem,
-} from '@/components/ui/sidebar';
-import { dashboard } from '@/routes';
-import { index as purchaseOrdersIndex } from '@/routes/purchase-orders';
-import { index as salesOrdersIndex } from '@/routes/sales-orders';
-import { index as suppliersIndex } from '@/routes/suppliers';
-import type { NavItem } from '@/types';
+} from "@/components/ui/sidebar";
+import { dashboard } from "@/routes";
+import { index as purchaseOrdersIndex } from "@/routes/purchase-orders";
+import { index as salesOrdersIndex } from "@/routes/sales-orders";
+import { index as suppliersIndex } from "@/routes/suppliers";
+import type { NavItem } from "@/types";
 
 const page = usePage();
 
-const modules = [
-    { title: 'Finance', icon: BadgeDollarSign },
-    { title: 'Reports & Operations', icon: ChartNoAxesCombined },
-];
+const modules = [{ title: "Reports & Operations", icon: ChartNoAxesCombined }];
 
 const dashboardUrl = computed(() =>
-    page.props.currentTeam ? dashboard(page.props.currentTeam.slug).url : '/',
+    page.props.currentTeam ? dashboard(page.props.currentTeam.slug).url : "/",
 );
 
 const mainNavItems = computed<NavItem[]>(() => [
     {
-        title: 'Dashboard',
+        title: "Dashboard",
         href: dashboardUrl.value,
         icon: LayoutGrid,
     },
     {
-        title: 'Inventory',
+        title: "Inventory",
         href: page.props.currentTeam
             ? `/${page.props.currentTeam.slug}/inventories`
-            : '/inventories',
+            : "/inventories",
         icon: Boxes,
     },
     {
-        title: 'Scan stock',
+        title: "Scan stock",
         href: page.props.currentTeam
             ? `/${page.props.currentTeam.slug}/inventory-scans`
-            : '/inventory-scans',
+            : "/inventory-scans",
         icon: Barcode,
     },
     {
-        title: 'Warehouses',
+        title: "Warehouses",
         href: page.props.currentTeam
             ? `/${page.props.currentTeam.slug}/warehouses`
-            : '/warehouses',
+            : "/warehouses",
         icon: Warehouse,
     },
     {
-        title: 'Sales',
+        title: "Sales",
         href: page.props.currentTeam
             ? salesOrdersIndex(page.props.currentTeam.slug).url
-            : '/',
+            : "/",
         icon: ReceiptText,
     },
 ]);
 
 const purchasingNavItems = computed<NavItem[]>(() => [
     {
-        title: 'Purchase orders',
+        title: "Purchase orders",
         href: page.props.currentTeam
             ? purchaseOrdersIndex(page.props.currentTeam.slug).url
             : purchaseOrdersIndex().url,
         icon: ShoppingCart,
     },
     {
-        title: 'Suppliers',
+        title: "Suppliers",
         href: page.props.currentTeam
             ? suppliersIndex(page.props.currentTeam.slug).url
             : suppliersIndex().url,
         icon: Truck,
+    },
+]);
+
+const financeNavItems = computed<NavItem[]>(() => [
+    {
+        title: "Finance",
+        href: page.props.currentTeam
+            ? `/${page.props.currentTeam.slug}/finance`
+            : "/finance",
+        icon: CircleDollarSign,
     },
 ]);
 </script>
@@ -120,6 +127,7 @@ const purchasingNavItems = computed<NavItem[]>(() => [
                 :items="mainNavItems"
                 :modules="modules"
                 :purchasing-items="purchasingNavItems"
+                :finance-items="financeNavItems"
             />
         </SidebarContent>
 

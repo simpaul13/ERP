@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\DashboardController;
+use App\Http\Controllers\Finance\FinanceController;
 use App\Http\Controllers\Inventories\InventoryController;
 use App\Http\Controllers\Inventories\InventoryScanController;
 use App\Http\Controllers\Inventories\WarehouseController;
@@ -18,6 +19,12 @@ Route::prefix('{current_team}')
     ->middleware(['auth', 'verified', EnsureTeamMembership::class])
     ->group(function () {
         Route::get('dashboard', DashboardController::class)->name('dashboard');
+        Route::get('finance', [FinanceController::class, 'index'])->name('finance.index');
+        Route::post('finance/transactions', [FinanceController::class, 'store'])->name('finance.transactions.store');
+        Route::patch('finance/transactions/{financeTransaction}', [FinanceController::class, 'update'])->name('finance.transactions.update');
+        Route::delete('finance/transactions/{financeTransaction}', [FinanceController::class, 'destroy'])->name('finance.transactions.destroy');
+        Route::post('finance/categories', [FinanceController::class, 'saveCategory'])->name('finance.categories.store');
+        Route::patch('finance/categories/{financeCategory}', [FinanceController::class, 'saveCategory'])->name('finance.categories.update');
         Route::get('suppliers', [SupplierController::class, 'index'])->name('suppliers.index');
         Route::post('suppliers', [SupplierController::class, 'store'])->name('suppliers.store');
         Route::patch('suppliers/{supplier}', [SupplierController::class, 'update'])->name('suppliers.update');
