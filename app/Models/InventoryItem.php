@@ -2,8 +2,10 @@
 
 namespace App\Models;
 
+use Database\Factories\InventoryItemFactory;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Collection;
+use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
@@ -31,6 +33,9 @@ use Illuminate\Validation\ValidationException;
 #[Fillable(['team_id', 'sku', 'name', 'category', 'quantity', 'reorder_point', 'unit_cost', 'images', 'main_image_id'])]
 class InventoryItem extends Model
 {
+    /** @use HasFactory<InventoryItemFactory> */
+    use HasFactory;
+
     /**
      * Serialize deletion with reservation creation and all stock mutations.
      */
